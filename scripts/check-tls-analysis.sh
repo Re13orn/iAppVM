@@ -10,11 +10,11 @@ python3 TestTools/Tests/tls-fixture.py build/tls-analysis/fixture > build/tls-an
 task_tls_fixture_pid=$!
 trap 'kill "$task_tls_fixture_pid" 2>/dev/null || true; wait "$task_tls_fixture_pid" 2>/dev/null || true' EXIT
 for task_tls_attempt in {1..100}; do
-  if rg -q '^ready$' build/tls-analysis/fixture.log; then break; fi
+  if grep -qx 'ready' build/tls-analysis/fixture.log; then break; fi
   kill -0 "$task_tls_fixture_pid" 2>/dev/null || { cat build/tls-analysis/fixture.log; exit 1; }
   sleep 0.1
 done
-rg -q '^ready$' build/tls-analysis/fixture.log
+grep -qx 'ready' build/tls-analysis/fixture.log
 openssl x509 -in build/tls-analysis/fixture/server.pem -pubkey -noout | openssl pkey -pubin -outform DER | openssl dgst -sha256 -binary | openssl base64 -A > build/tls-analysis/fixture/spki.txt
 build/tls-analysis/static-tests build/tls-analysis/fixture
 for task_tls_mode in default no-delegate custom-ca pin pin-mismatch task-pin per-task-pin mtls mtls-no-identity mtls-pin; do

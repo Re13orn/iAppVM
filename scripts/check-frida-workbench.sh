@@ -15,9 +15,9 @@ python3 TestTools/Tests/proxy-diagnostic-fixture.py > build/debug-workbench/prox
 task_fixture_pid=$!
 trap 'kill "$task_fixture_pid" 2>/dev/null || true; wait "$task_fixture_pid" 2>/dev/null || true' EXIT
 for task_attempt in {1..50}; do
-  if rg -q '^ready$' build/debug-workbench/proxy-fixture.log; then break; fi
+  if grep -qx 'ready' build/debug-workbench/proxy-fixture.log; then break; fi
   kill -0 "$task_fixture_pid" 2>/dev/null || { cat build/debug-workbench/proxy-fixture.log; exit 1; }
   sleep 0.1
 done
-rg -q '^ready$' build/debug-workbench/proxy-fixture.log
+grep -qx 'ready' build/debug-workbench/proxy-fixture.log
 build/debug-workbench/ProxyTests

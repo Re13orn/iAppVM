@@ -9,6 +9,21 @@ iAppVM 是面向非越狱 iPhone 和 iPad 的 iOS 应用测试容器。它把 IP
 
 请使用自有或已获授权的测试 App。导入的 IPA 须已解密，运行需要有效签名。网络分析覆盖受支持的路径，Guest 之间没有系统 App 级别的隔离。完整性校验、系统权限或扩展依赖也会影响兼容性。流量和身份导出可能包含认证头、会话数据和私钥，分享前请检查内容。
 
+## 下载与首次运行
+
+打开 [GitHub Release](https://github.com/Re13orn/iAppVM/releases/tag/v3.8.46-preview.1)，在 **Assets** 选一种安装方式。
+
+| 你的情况 | 下载与操作 |
+| --- | --- |
+| 有 Apple Silicon Mac（macOS 14 或更新）和 USB 线 | 下载 `iAppVM-Installer-0.1.0-arm64.zip`。解压后打开安装助手，用自己的 Apple 账号登录并按提示完成设备安装和手机签名配置。安装助手自带 iOS 宿主。[详细步骤和常见错误](MacInstaller/README.md) |
+| 已有自己的 iOS 签名流程 | 下载 `iAppVM-3.8.46-unsigned.ipa`，用包含目标设备的开发签名和描述文件重签后再安装。独立测试窗口还需要正确签名的 `LiveProcess` 扩展。[签名要求和仓库脚本](docs/DEVICE-SIGNING.md) |
+
+首次打开 iAppVM 时按设备提示完成开发者模式或信任。**宿主能打开和宿主能为导入的 App 签名是两个检查点。** 如果目标 App 显示「尚未完成签名」，在 iAppVM 设置中配置与宿主匹配的签名身份，再回到目标 App 的签名入口。安装助手用户以最后一步的手机签名自检回执为准。[手机签名说明](docs/DEVICE-SIGNING.md#phone-signing)
+
+初次验证可下载 [iOSVMDemo.ipa](https://github.com/Re13orn/iAppVM/releases/download/v3.8.46-preview.1/iOSVMDemo.ipa)。把它存到 iPhone 的「文件」，在 **iAppVM 内**导入并启动，点击「写入测试文件」，再到该 App 的「浏览沙盒」查看 `Documents/iosvm-demo.json`。看到文件即完成导入、运行和沙盒读取的检查。
+
+遇到问题时，在报告里注明 iAppVM 版本、设备和系统版本、卡住的步骤及错误文本。提交前移除账号、设备标识、认证头和密钥。[报告问题](https://github.com/Re13orn/iAppVM/issues/new?template=bug_report.yml)
+
 ## 从源码构建
 
 需要 Apple Silicon Mac、Xcode 26.2 和对应的 iOS SDK，以及 Python 3 和 `xz`。从 Git 检出根目录执行：

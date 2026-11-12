@@ -9,11 +9,11 @@ python3 TestTools/Tests/tls-fixture.py "$task_intercept_root/fixture" > "$task_i
 task_intercept_pid=$!
 trap 'kill "$task_intercept_pid" 2>/dev/null || true; wait "$task_intercept_pid" 2>/dev/null || true' EXIT
 for task_intercept_attempt in {1..100}; do
-  if rg -q '^ready$' "$task_intercept_root/server.log"; then break; fi
+  if grep -qx 'ready' "$task_intercept_root/server.log"; then break; fi
   kill -0 "$task_intercept_pid" 2>/dev/null || { cat "$task_intercept_root/server.log"; exit 1; }
   sleep 0.1
 done
-rg -q '^ready$' "$task_intercept_root/server.log"
+grep -qx 'ready' "$task_intercept_root/server.log"
 python3 - "$task_intercept_root/fixture" <<'PY'
 import subprocess,sys
 from pathlib import Path
