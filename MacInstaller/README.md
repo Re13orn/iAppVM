@@ -11,7 +11,7 @@ python3 MacInstaller/build.py
 bash MacInstaller/check.sh
 ```
 
-构建需要与 [iOS 宿主](../README.md) 相同的工具，以及 Rust 和 Cargo。依赖版本记录在 `Backend/Cargo.lock`。产物位于 `build/MacInstaller/`，本地构建使用 ad-hoc 签名。面向普通用户分发前还需完成 Developer ID 签名和 Apple 公证。
+构建需要与 [iOS 宿主](../README.md) 相同的工具，以及 Rust 和 Cargo。依赖版本记录在 `Backend/Cargo.lock`。产物位于 `build/MacInstaller/`。安装助手以 ad-hoc 签名的预览包提供，适用于 Apple Silicon Mac。首次打开下载的预览包时，macOS 可能拦截启动，请按系统提示处理。
 
 ## 安装与配置
 
