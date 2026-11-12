@@ -150,11 +150,19 @@ class LCContainer : ObservableObject, Hashable {
             }
             
             let plistData = try PropertyListSerialization.data(fromPropertyList: infoDict as Any, format: .binary, options: 0)
-            try plistData.write(to: infoDictUrl)
+            // Atomic write so a concurrent list refresh can never observe a
+            // truncated container info; failure propagates so the caller can
+            // roll back instead of silently keeping a broken container.
+            try plistData.write(to: infoDictUrl, options: .atomic)
         } catch {
-            
+            NSLog("[LC] Failed to write container info plist at %@: %@", infoDictUrl.path, String(describing: error))
+            lastPlistWriteError = error
         }
     }
+
+    /// Set when the most recent makeLCContainerInfoPlist failed; callers that
+    /// depend on the container existing on disk can consult this to recover.
+    private(set) var lastPlistWriteError: Error?
     
     func reloadInfoPlist() {
         infoDict = NSDictionary(contentsOf: infoDictUrl) as? [String : Any]

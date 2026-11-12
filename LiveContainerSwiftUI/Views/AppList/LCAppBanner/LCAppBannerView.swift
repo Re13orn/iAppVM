@@ -7,9 +7,10 @@ import Foundation
 import UIKit
 
 final class LCAppBannerRootView: UIView {
-    static let bannerHeight: CGFloat = 88
+    static var bannerHeight: CGFloat { UIFontMetrics.default.scaledValue(for: 112) }
 
     let runControl = LCAppBannerRunControl()
+    let settingsControl = UIButton(type: .system)
 
     private let visualBackgroundView = UIView()
     private let iconImageView = UIImageView()
@@ -42,7 +43,7 @@ final class LCAppBannerRootView: UIView {
     private func setupView() {
         isOpaque = false
         backgroundColor = .clear
-        layer.cornerRadius = 22
+        layer.cornerRadius = 18
         layer.cornerCurve = .continuous
         clipsToBounds = true
 
@@ -57,10 +58,11 @@ final class LCAppBannerRootView: UIView {
         iconImageView.clipsToBounds = true
         iconImageView.isAccessibilityElement = false
 
-        configureLabel(nameLabel, font: .systemFont(ofSize: 16, weight: .bold))
-        configureLabel(versionLabel, font: .systemFont(ofSize: 12))
-        configureLabel(remarkLabel, font: .systemFont(ofSize: 10))
-        configureLabel(containerLabel, font: .systemFont(ofSize: 8))
+        configureLabel(nameLabel, font: UIFontMetrics(forTextStyle: .headline).scaledFont(for: .systemFont(ofSize: 17, weight: .semibold)))
+        nameLabel.numberOfLines = 2
+        configureLabel(versionLabel, font: .preferredFont(forTextStyle: .caption1))
+        configureLabel(remarkLabel, font: .preferredFont(forTextStyle: .caption1))
+        configureLabel(containerLabel, font: .preferredFont(forTextStyle: .caption1))
 
         nameLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         nameLabel.setContentHuggingPriority(.required, for: .horizontal)
@@ -81,7 +83,7 @@ final class LCAppBannerRootView: UIView {
         detailStack.axis = .vertical
         detailStack.alignment = .fill
         detailStack.distribution = .fill
-        detailStack.spacing = 1
+        detailStack.spacing = 5
         detailStack.addArrangedSubview(nameStack)
         detailStack.addArrangedSubview(versionLabel)
         detailStack.addArrangedSubview(remarkLabel)
@@ -90,10 +92,15 @@ final class LCAppBannerRootView: UIView {
         detailStack.isAccessibilityElement = true
 
         runControl.translatesAutoresizingMaskIntoConstraints = false
+        settingsControl.translatesAutoresizingMaskIntoConstraints = false
+        settingsControl.setImage(UIImage(systemName: "ellipsis"), for: .normal)
+        settingsControl.accessibilityLabel = "App 工作台与设置"
+        settingsControl.tintColor = .secondaryLabel
         addSubview(visualBackgroundView)
         addSubview(iconImageView)
         addSubview(detailStack)
         addSubview(runControl)
+        addSubview(settingsControl)
 
         NSLayoutConstraint.activate([
             visualBackgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
@@ -103,22 +110,27 @@ final class LCAppBannerRootView: UIView {
 
             iconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
             iconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 60),
-            iconImageView.heightAnchor.constraint(equalToConstant: 60),
+            iconImageView.widthAnchor.constraint(equalToConstant: 52),
+            iconImageView.heightAnchor.constraint(equalToConstant: 52),
 
             detailStack.leadingAnchor.constraint(equalTo: iconImageView.trailingAnchor, constant: 10),
             detailStack.trailingAnchor.constraint(lessThanOrEqualTo: runControl.leadingAnchor, constant: -10),
             detailStack.centerYAnchor.constraint(equalTo: centerYAnchor),
 
             runControl.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
-            runControl.centerYAnchor.constraint(equalTo: centerYAnchor),
-            runControl.widthAnchor.constraint(equalToConstant: 70),
-            runControl.heightAnchor.constraint(equalToConstant: 32)
+            runControl.topAnchor.constraint(equalTo: topAnchor, constant: 14),
+            runControl.widthAnchor.constraint(equalToConstant: 72),
+            runControl.heightAnchor.constraint(equalToConstant: 40),
+            settingsControl.centerXAnchor.constraint(equalTo: runControl.centerXAnchor),
+            settingsControl.topAnchor.constraint(equalTo: runControl.bottomAnchor, constant: 2),
+            settingsControl.widthAnchor.constraint(equalToConstant: 48),
+            settingsControl.heightAnchor.constraint(equalToConstant: 44)
         ])
     }
 
     private func configureLabel(_ label: UILabel, font: UIFont) {
         label.font = font
+        label.adjustsFontForContentSizeCategory = true
         label.numberOfLines = 1
         label.lineBreakMode = .byTruncatingTail
         label.isAccessibilityElement = false
@@ -131,21 +143,32 @@ final class LCAppBannerRootView: UIView {
         darkModeIcon: Bool,
         traitCollection: UITraitCollection
     ) {
-        let icon = appInfo.iconIsDarkIcon(darkModeIcon) ?? UIImage()
+        let icon = appInfo.iconIsDarkIcon(darkModeIcon) ?? UIImage(systemName: "app.dashed") ?? UIImage()
         let mainColor = Self.extractMainHueColor(appInfo: appInfo, icon: icon, darkModeIcon: darkModeIcon)
-        let accentColor = dynamicColors ? mainColor : (UIColor(named: "FontColor") ?? .systemBlue)
-        let textColor = Self.readableTextColor(for: accentColor, traitCollection: traitCollection)
+        // Keep the action readable even for white or very dark app icons.
+        var hue: CGFloat = 0, saturation: CGFloat = 0, brightness: CGFloat = 0, alpha: CGFloat = 0
+        mainColor.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
+        let accentColor = dynamicColors && saturation > 0.15
+            ? UIColor(hue: hue, saturation: min(saturation, 0.65), brightness: 0.58, alpha: 1)
+            : UIColor.systemBlue
 
         iconImageView.image = icon
+        iconImageView.tintColor = .tertiaryLabel
         nameLabel.text = model.displayName
         nameLabel.textColor = .label
-        versionLabel.text = "\(model.version) - \(model.bundleIdentifier)"
-        versionLabel.textColor = textColor
+        versionLabel.text = "v\(model.version) · \(model.bundleIdentifier)"
+        versionLabel.textColor = .secondaryLabel
         remarkLabel.text = model.uiRemark
-        remarkLabel.textColor = textColor.withAlphaComponent(0.8)
+        remarkLabel.textColor = .secondaryLabel
         remarkLabel.isHidden = model.uiRemark.isEmpty
-        containerLabel.text = model.uiSelectedContainer?.name ?? "lc.appBanner.noDataFolder".loc
-        containerLabel.textColor = textColor
+        let container = model.uiSelectedContainer
+        let containerName = container.map { item in
+            item.name == item.folderName
+                ? (model.uiContainers.count > 1 ? "沙盒 \((model.uiContainers.firstIndex(of: item) ?? 0) + 1)" : "默认沙盒")
+                : item.name
+        } ?? "lc.appBanner.noDataFolder".loc
+        containerLabel.text = containerName
+        containerLabel.textColor = model.isAppRunning ? accentColor : .tertiaryLabel
 
         sharedBadge.isHidden = !model.uiIsShared
         sharedBadge.backgroundColor = UIColor(named: "BadgeColor") ?? .systemOrange
@@ -156,14 +179,14 @@ final class LCAppBannerRootView: UIView {
         bit32Badge.isHidden = !model.uiIs32bit
         bit32Badge.backgroundColor = UIColor(named: "32BitBadgeColor") ?? .systemBlue
 
-        visualBackgroundView.backgroundColor = dynamicColors
-            ? mainColor.withAlphaComponent(0.5)
-            : (UIColor(named: "AppBannerBG") ?? .secondarySystemBackground)
+        backgroundColor = .secondarySystemGroupedBackground
+        visualBackgroundView.backgroundColor = dynamicColors ? accentColor.withAlphaComponent(0.04) : .clear
         runControl.update(
             color: accentColor,
             isSigning: model.isSigningInProgress,
             progress: model.signProgress,
-            isEnabled: !model.isAppRunning
+            isEnabled: !model.isOperationBusy,
+            isRunning: model.isAppRunning && !model.isOperationBusy
         )
 
         var accessibilityParts = [model.displayName, "\(model.version) - \(model.bundleIdentifier)"]
@@ -343,7 +366,7 @@ final class LCAppBannerRunControl: UIControl {
         titleLabel.font = .systemFont(ofSize: 16, weight: .bold)
         titleLabel.textAlignment = .center
         titleLabel.adjustsFontSizeToFitWidth = true
-        titleLabel.minimumScaleFactor = 0.1
+        titleLabel.minimumScaleFactor = 0.8
         titleLabel.isUserInteractionEnabled = false
 
         activityIndicator.translatesAutoresizingMaskIntoConstraints = false
@@ -369,7 +392,7 @@ final class LCAppBannerRunControl: UIControl {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        layer.cornerRadius = bounds.height / 2
+        layer.cornerRadius = 12
         baseLayer.frame = bounds
 
         let width = bounds.width
@@ -382,13 +405,20 @@ final class LCAppBannerRunControl: UIControl {
         progressCircleLayer.cornerRadius = width
     }
 
+    override var isHighlighted: Bool {
+        didSet { alpha = isHighlighted ? 0.65 : (isEnabled ? 1 : 0.5) }
+    }
+
     override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         bounds.insetBy(dx: -4, dy: -6).contains(point)
     }
 
-    func update(color: UIColor, isSigning: Bool, progress: Double, isEnabled: Bool) {
+    func update(color: UIColor, isSigning: Bool, progress: Double, isEnabled: Bool, isRunning: Bool) {
         self.progress = min(max(progress, 0), 1)
         self.isEnabled = isEnabled
+        titleLabel.text = isRunning && !isSigning ? "切回" : "lc.appBanner.run".loc
+        accessibilityLabel = titleLabel.text
+        self.alpha = isEnabled ? 1 : 0.5
 
         baseLayer.backgroundColor = color.withAlphaComponent(isSigning ? 0.2 : 1).cgColor
         progressCircleLayer.backgroundColor = color.cgColor

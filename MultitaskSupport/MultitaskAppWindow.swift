@@ -23,22 +23,57 @@ struct MultitaskAppInfo {
 @objc class MultitaskWindowManager: NSObject {
     @Environment(\.openWindow) static var openWindow
     static var appDict: [String: MultitaskAppInfo] = [:]
-    
+    private static var activeWindowKeys: [String: String] = [:]
+    // PID reports are keyed per window so concurrent launches cannot overwrite
+    // each other's callbacks. All access happens on the main thread.
+    private static var launchCallbacks: [String: (NSNumber, Error?) -> Void] = [:]
+    // openWindow has no failure receipt; fire pending callbacks after this
+    // timeout so callers waiting on a PID (e.g. JIT continuations) never hang.
+    private static let launchCallbackTimeout: TimeInterval = 60
+
     @objc class func openAppWindow(displayName: String, dataUUID: String, bundleId: String, pidCallback: ((NSNumber, Error?) -> Void)?) {
         DataManager.shared.model.enableMultipleWindow = true
-        DataManager.shared.model.pidCallback = pidCallback
-        appDict[dataUUID] = MultitaskAppInfo(displayName: displayName, dataUUID: dataUUID, bundleId: bundleId)
-        openWindow(id: "appView", value: dataUUID)
-    }
-    
-    @objc class func openExistingAppWindow(dataUUID: String) -> Bool {
-        for a in appDict {
-            if a.value.dataUUID == dataUUID {
-                openWindow(id: "appView", value: a.key)
-                return true
+        let windowKey = UUID().uuidString
+        if let pidCallback {
+            launchCallbacks[windowKey] = pidCallback
+            DispatchQueue.main.asyncAfter(deadline: .now() + launchCallbackTimeout) {
+                if let pending = launchCallbacks.removeValue(forKey: windowKey) {
+                    pending(NSNumber(value: 0), NSError(domain: "iOSVMWindow", code: 8,
+                        userInfo: [NSLocalizedDescriptionKey: "打开测试窗口超时，未能获得 Guest 进程 PID。"]))
+                }
             }
         }
+        // Reopening the same container must not leak the previous window's
+        // registration: drop its key mapping first so forgetWindow can't later
+        // resurrect stale state.
+        if let oldKey = activeWindowKeys[dataUUID], oldKey != windowKey, appDict[oldKey] != nil {
+            forgetWindow(oldKey)
+        }
+        appDict[windowKey] = MultitaskAppInfo(displayName: displayName, dataUUID: dataUUID, bundleId: bundleId)
+        activeWindowKeys[dataUUID] = windowKey
+        openWindow(id: "appView", value: windowKey)
+    }
+
+    static func consumeLaunchCallback(_ windowKey: String) -> ((NSNumber, Error?) -> Void)? {
+        launchCallbacks.removeValue(forKey: windowKey)
+    }
+
+    @objc class func openExistingAppWindow(dataUUID: String) -> Bool {
+        if MultitaskManager.isUsing(container: dataUUID), let key = activeWindowKeys[dataUUID], appDict[key] != nil {
+            openWindow(id: "appView", value: key)
+            return true
+        }
         return false
+    }
+
+    static func forgetWindow(_ key: String) {
+        if let info = appDict.removeValue(forKey: key), activeWindowKeys[info.dataUUID] == key {
+            activeWindowKeys.removeValue(forKey: info.dataUUID)
+        }
+        if let pending = launchCallbacks.removeValue(forKey: key) {
+            pending(NSNumber(value: 0), NSError(domain: "iOSVMWindow", code: 8,
+                userInfo: [NSLocalizedDescriptionKey: "测试窗口在启动完成前已关闭。"]))
+        }
     }
 }
 
@@ -120,6 +155,7 @@ struct AppSceneViewSwiftUI: UIViewControllerRepresentable {
 
 @available(iOS 16.1, *)
 struct MultitaskAppWindow: View {
+    private let windowKey: String
     @State var show = true
     @State var pid = 0
     @State var appInfo: MultitaskAppInfo? = nil
@@ -132,6 +168,7 @@ struct MultitaskAppWindow: View {
     @AppStorage("LCSkipTerminatedScreen", store: LCUtils.appGroupUserDefault) var skipTerminatedScreen = false
     let pub = NotificationCenter.default.publisher(for: UIScene.didDisconnectNotification)
     init(id: String) {
+        windowKey = id
         guard let appInfo = MultitaskWindowManager.appDict[id] else {
             return
         }
@@ -150,8 +187,7 @@ struct MultitaskAppWindow: View {
                         } else {
                             self.errorMessage = error?.localizedDescription
                         }
-                        DataManager.shared.model.pidCallback?(NSNumber(value: pid), error)
-                        DataManager.shared.model.pidCallback = nil
+                        MultitaskWindowManager.consumeLaunchCallback(windowKey)?(NSNumber(value: pid), error)
                     }
                 })
                 .background(.black)
@@ -160,8 +196,13 @@ struct MultitaskAppWindow: View {
             .ignoresSafeArea(.all, edges: .all)
             .navigationTitle(Text("\(appInfo.displayName) - \(String(pid))"))
             .onReceive(pub) { out in
-                if let scene1 = sceneDelegate.window?.windowScene, let scene2 = out.object as? UIWindowScene, scene1 == scene2 {
+                // The notification object is the disconnecting scene; each
+                // window owns a dedicated SceneDelegate instance, so compare
+                // against its captured scene instead of the one-shot keyWindow
+                // (nil for SwiftUI scenes).
+                if let disconnected = out.object as? UIScene, disconnected === sceneDelegate.scene {
                     show = false
+                    MultitaskWindowManager.forgetWindow(windowKey)
                 }
             }
             

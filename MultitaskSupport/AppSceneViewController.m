@@ -12,6 +12,7 @@
 #import "Localization.h"
 #import "LCSharedUtils.h"
 #import "utils.h"
+#import "../LiveContainer/IOSVMGuestSession.h"
 #import "UIKitPrivate+MultitaskSupport.h"
 
 @interface AppSceneViewController()
@@ -27,6 +28,22 @@
 @property(nonatomic) NSString *sceneID;
 @property(nonatomic) NSExtension* extension;
 @property(nonatomic) bool isAppTerminationCleanUpCalled;
+@property(nonatomic) NSString *processLaunchID;
+@property(nonatomic) NSTimer *processTimer;
+@property(nonatomic) uint64_t processAuditToken57;
+@property(nonatomic) NSDictionary *accessPlan;
+@property(nonatomic) NSURL *externalDataURL;
+@property(nonatomic) id stopObserver;
+@property(nonatomic) BOOL initializationFailureReported;
+@property(nonatomic) BOOL stopRequested;
+@property(nonatomic) NSString *terminalState;
+@property(nonatomic) NSString *terminalReason;
+- (void)stopOwnedRequestWithReason:(NSString *)reason;
+- (void)killOwnedRequest;
+
+- (void)failLaunch:(NSError *)error;
+- (void)checkProcess;
+
 @end
 
 @implementation AppSceneViewController
@@ -46,22 +63,35 @@
         UIKitFixesInit();
     });
     
-    // init extension
-    NSError* error = nil;
+    NSError *error = nil;
+    self.processLaunchID = [IOSVMProcessRegistry.shared beginBundle:bundleId container:dataUUID error:&error];
+    if (!self.processLaunchID) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [delegate appSceneVC:self didInitializeWithError:error]; });
+        return self;
+    }
+    __weak typeof(self) stopOwner = self;
+    self.stopObserver = [NSNotificationCenter.defaultCenter addObserverForName:@"IOSVMStopGuest" object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note) {
+        AppSceneViewController *owner = stopOwner;
+        if ([note.userInfo[@"id"] isEqual:owner.processLaunchID] && !owner.isAppTerminationCleanUpCalled) {
+            if ([owner.delegate isKindOfClass:DecoratedAppSceneViewController.class]) [(DecoratedAppSceneViewController *)owner.delegate closeWindow];
+            else {
+                [owner terminate];
+                if (owner.isNativeWindow && owner.view.window.windowScene) [UIApplication.sharedApplication requestSceneSessionDestruction:owner.view.window.windowScene.session options:nil errorHandler:nil];
+            }
+        }
+    }];
     _extension = [NSExtension extensionWithIdentifier:LCUtils.liveProcessBundleIdentifier error:&error];
-    if(error) {
-        [delegate appSceneVC:self didInitializeWithError:error];
-        return nil;
+    if (!_extension || error) {
+        [self failLaunch:error ?: [NSError errorWithDomain:@"iOSVMWindow" code:2 userInfo:@{NSLocalizedDescriptionKey:@"LiveProcess 扩展不可用。"}]];
+        return self;
     }
     _extension.preferredLanguages = @[];
     
     NSExtensionItem *item = [NSExtensionItem new];
-    NSMutableArray* bookmarks = [NSMutableArray array];
     NSMutableDictionary *userInfo = @{
         @"hostUrlScheme": NSUserDefaults.lcAppUrlScheme,
         @"selected": _bundleId,
         @"selectedContainer": _dataUUID,
-        @"bookmarks": bookmarks,
         @"lcHomePath": NSHomeDirectory(),
     }.mutableCopy;
     
@@ -72,48 +102,90 @@
     }
     
     NSURL *docURL = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].lastObject;
-    if ([NSUserDefaults.standardUserDefaults boolForKey:@"LCSharePrivateDataWithLiveProcess"]) {
-        NSData* bookmarkData = [docURL bookmarkDataWithOptions:(1<<11) includingResourceValuesForKeys:0 relativeToURL:0 error:0];
-        [bookmarks addObject:bookmarkData];
-    } else {
-        bool isSharedApp = false;
-        NSBundle* bundle = [LCSharedUtils findBundleWithBundleId:bundleId isSharedAppOut:&isSharedApp];
-        // when mutlitask with private app, we can restrict its sandbox to only its own container
-        if (!isSharedApp) {
-            NSURL *dataURL = [docURL URLByAppendingPathComponent:[NSString stringWithFormat:@"Data/Application/%@", dataUUID]];
-            NSURL *tweaksURL = [docURL URLByAppendingPathComponent:@"Tweaks"];
-            [bookmarks addObject:[bundle.bundleURL bookmarkDataWithOptions:(1<<11) includingResourceValuesForKeys:0 relativeToURL:0 error:0]];
-            NSData* containerBookmark = [dataURL bookmarkDataWithOptions:(1<<11) includingResourceValuesForKeys:0 relativeToURL:0 error:0];
-            if(containerBookmark) {
-                [bookmarks addObject:containerBookmark];
-            }
-            [bookmarks addObject:[tweaksURL bookmarkDataWithOptions:(1<<11) includingResourceValuesForKeys:0 relativeToURL:0 error:0]];
+    NSURL *appURL = [[docURL URLByAppendingPathComponent:@"Applications"] URLByAppendingPathComponent:bundleId];
+    BOOL shared = ![NSFileManager.defaultManager fileExistsAtPath:appURL.path];
+    NSURL *sharedDocuments = [LCSharedUtils.appGroupPath URLByAppendingPathComponent:@"LiveContainer"];
+    if (shared) appURL = [[sharedDocuments URLByAppendingPathComponent:@"Applications"] URLByAppendingPathComponent:bundleId];
+    NSURL *dataURL = [[(shared ? sharedDocuments : docURL) URLByAppendingPathComponent:@"Data/Application"] URLByAppendingPathComponent:dataUUID];
+    NSDictionary *metadata = [NSDictionary dictionaryWithContentsOfURL:[appURL URLByAppendingPathComponent:@"LCAppInfo.plist"]];
+    NSArray *registeredContainers = [metadata[@"LCContainers"] isKindOfClass:NSArray.class] ? metadata[@"LCContainers"] : @[];
+    for (NSDictionary *container in registeredContainers) {
+        if (![container isKindOfClass:NSDictionary.class]) continue;
+        if (![container[@"folderName"] isEqual:dataUUID] || ![container[@"bookmarkData"] isKindOfClass:NSData.class]) continue;
+        BOOL stale = NO;
+        NSURL *external = [NSURL URLByResolvingBookmarkData:container[@"bookmarkData"] options:0 relativeToURL:nil bookmarkDataIsStale:&stale error:&error];
+        if (!external || stale || ![external startAccessingSecurityScopedResource]) {
+            [self failLaunch:error ?: [NSError errorWithDomain:@"iOSVMWindow" code:4 userInfo:@{NSLocalizedDescriptionKey:@"注册数据容器的书签不可用。"}]];
+            return self;
         }
+        self.externalDataURL = external;
+        dataURL = external;
+        break;
     }
+    NSDictionary *plan = [IOSVMGuestAccess planForApplication:appURL data:dataURL documents:docURL shared:shared
+        shareAll:[NSUserDefaults.standardUserDefaults boolForKey:@"LCSharePrivateDataWithLiveProcess"] error:&error];
+    if (!plan) { [self failLaunch:error]; return self; }
+    self.accessPlan = plan;
+    [IOSVMProcessRegistry.shared updateLaunch:self.processLaunchID state:@"preparing" details:@{
+        @"authorizationMode":plan[@"mode"], @"capabilities":[IOSVMGuestAccess publicCapabilities:plan]
+    }];
+    NSDictionary *issued = [IOSVMGuestAccess issuePlan:plan error:&error];
+    if (!issued) { [self failLaunch:error]; return self; }
+    userInfo[@"IOSVMAccessPlan"] = issued;
+    userInfo[@"IOSVMLaunchID"] = self.processLaunchID;
     item.userInfo = userInfo;
     
     __weak typeof(self) weakSelf = self;
-    [_extension setRequestCancellationBlock:^(NSUUID *uuid, NSError *error) {
-        [weakSelf appTerminationCleanUp];
-        [weakSelf.delegate appSceneVC:weakSelf didInitializeWithError:error];
+    [_extension setRequestCancellationBlock:^(NSUUID *uuid, NSError *failure) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AppSceneViewController *owner = weakSelf;
+            if (!owner || owner.isAppTerminationCleanUpCalled) return;
+            if (!owner.stopRequested) {
+                owner.terminalState = owner.pid == 0 ? @"failed" : @"interrupted";
+                owner.terminalReason = failure.localizedDescription ?: @"扩展请求已取消；退出原因未经确认。";
+            }
+            if (failure && owner.pid == 0 && !owner.initializationFailureReported) { [owner failLaunch:failure]; return; }
+            [owner appTerminationCleanUp];
+        });
     }];
     [_extension setRequestInterruptionBlock:^(NSUUID *uuid) {
-        [weakSelf appTerminationCleanUp];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            AppSceneViewController *owner = weakSelf;
+            if (!owner || owner.isAppTerminationCleanUpCalled) return;
+            if (!owner.stopRequested) {
+                owner.terminalState = @"interrupted";
+                owner.terminalReason = @"扩展请求中断；不据此判定目标发生崩溃。";
+            }
+            [owner appTerminationCleanUp];
+        });
     }];
+    self.processTimer = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *timer) { [weakSelf checkProcess]; }];
     [_extension beginExtensionRequestWithInputItems:@[item] completion:^(NSUUID *identifier) {
-        if(identifier) {
-            [MultitaskManager registerMultitaskContainerWithContainer:self.dataUUID];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (self.isAppTerminationCleanUpCalled || self.initializationFailureReported) {
+                if (identifier && [self.extension respondsToSelector:@selector(cancelExtensionRequestWithIdentifier:)]) [self.extension cancelExtensionRequestWithIdentifier:identifier];
+                return;
+            }
             self.identifier = identifier;
-            self.pid = [self.extension pidForRequestIdentifier:self.identifier];
+            self.pid = identifier ? [self.extension pidForRequestIdentifier:identifier] : 0;
+            if (self.stopRequested) {
+                [IOSVMProcessRegistry.shared updateLaunch:self.processLaunchID state:@"stopping" details:@{@"pid":@(self.pid)}];
+                if (self.pid > 0) [self killOwnedRequest]; else [self appTerminationCleanUp];
+                return;
+            }
+            if (self.pid <= 0 || ![IOSVMProcessRegistry.shared updateLaunch:self.processLaunchID state:@"spawned" details:@{@"pid":@(self.pid)}]) {
+                [self failLaunch:[NSError errorWithDomain:@"iOSVMWindow" code:2 userInfo:@{NSLocalizedDescriptionKey:@"测试进程未能启动或启动请求已结束。"}]];
+                return;
+            }
             [delegate appSceneVC:self didInitializeWithError:nil];
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [self setUpAppPresenter];
-            });
-        } else {
-            NSError* error = [NSError errorWithDomain:@"LiveProcess" code:2 userInfo:@{NSLocalizedDescriptionKey: @"Failed to start app. Child process has unexpectedly crashed"}];
-            [delegate appSceneVC:self didInitializeWithError:error];
-        }
+            [self setUpAppPresenter];
+        });
     }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (!self.isAppTerminationCleanUpCalled && [[IOSVMProcessRegistry.shared recordForLaunch:self.processLaunchID][@"state"] isEqual:@"preparing"]) {
+            [self failLaunch:[NSError errorWithDomain:@"iOSVMWindow" code:8 userInfo:@{NSLocalizedDescriptionKey:@"等待扩展启动超时。"}]];
+        }
+    });
     
     return self;
 }
@@ -123,7 +195,14 @@
     FBProcessManager *manager = [PrivClass(FBProcessManager) sharedInstance];
     // At this point, the process is spawned and we're ready to create a scene to render in our app
     RBSProcessHandle* processHandle = [PrivClass(RBSProcessHandle) handleForPredicate:predicate error:nil];
-    [manager registerProcessForAuditToken:processHandle.auditToken];
+    if (!processHandle) {
+        [self failLaunch:[NSError errorWithDomain:@"iOSVMWindow" code:9 userInfo:@{NSLocalizedDescriptionKey:@"无法确认测试进程身份。"}]];
+        return;
+    }
+    audit_token_t token = processHandle.auditToken;
+    self.processAuditToken57 = token.val[7] | ((uint64_t)token.val[5] << 32);
+    [IOSVMProcessRegistry.shared updateLaunch:self.processLaunchID state:@"spawned" details:@{@"auditToken57":@(self.processAuditToken57)}];
+    [manager registerProcessForAuditToken:token];
     UIApplicationSceneSpecification *specification = [UIApplicationSceneSpecification specification];
     
     void (^updateSceneSettings)(id) = ^void(UIMutableApplicationSceneSettings *settings) {
@@ -236,18 +315,75 @@
     self.contentView.layer.position = CGPointMake(0, 0);
     
     [self.view.window.windowScene _registerSettingsDiffActionArray:@[self] forKey:self.sceneID];
+    [IOSVMProcessRegistry.shared updateLaunch:self.processLaunchID state:@"running" details:@{}];
 }
 
-- (void)terminate {
-    if(self.isAppRunning) {
-        [self.extension _kill:SIGTERM];
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [self.extension _kill:SIGKILL];
-        });
+- (void)failLaunch:(NSError *)error {
+    if (self.isAppTerminationCleanUpCalled || self.initializationFailureReported) return;
+    self.initializationFailureReported = YES;
+    NSError *failure = error ?: [NSError errorWithDomain:@"iOSVMWindow" code:1 userInfo:@{NSLocalizedDescriptionKey:@"测试启动失败。"}];
+    self.terminalState = @"failed";
+    self.terminalReason = failure.localizedDescription;
+    if (self.pid > 0 && self.isAppRunning) [self stopOwnedRequestWithReason:failure.localizedDescription];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.delegate appSceneVC:self didInitializeWithError:failure];
+        [self appTerminationCleanUp];
+    });
+}
+
+- (void)checkProcess {
+    if (self.isAppTerminationCleanUpCalled) return;
+    if (self.pid > 0 && !self.isAppRunning) { [self appTerminationCleanUp]; return; }
+    NSDictionary *current = [IOSVMProcessRegistry.shared recordForLaunch:self.processLaunchID];
+    if ([current[@"authorizationConsumed"] boolValue] || !self.accessPlan) return;
+    NSString *receiptPath = [self.accessPlan[@"dataPath"] stringByAppendingPathComponent:
+        [NSString stringWithFormat:@"Library/iOSVM/Access/%@.json",self.processLaunchID]];
+    NSData *data = [NSData dataWithContentsOfFile:receiptPath];
+    NSDictionary *receipt = data && data.length < 16384 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if ([receipt[@"id"] isEqual:self.processLaunchID] && [receipt[@"pid"] intValue] == self.pid &&
+        [receipt[@"bundle"] isEqual:self.bundleId] && [receipt[@"container"] isEqual:self.dataUUID]) {
+        [IOSVMProcessRegistry.shared updateLaunch:self.processLaunchID state:current[@"state"] details:@{@"authorizationConsumed":@YES}];
     }
 }
 
+- (void)terminate {
+    if (!self.terminalState) { self.terminalState = @"exited"; self.terminalReason = @"用户关闭测试窗口。"; }
+    [self stopOwnedRequestWithReason:self.terminalReason];
+}
+
+- (void)stopOwnedRequestWithReason:(NSString *)reason {
+    if (self.isAppTerminationCleanUpCalled || self.stopRequested) return;
+    self.stopRequested = YES;
+    [IOSVMProcessRegistry.shared updateLaunch:self.processLaunchID state:@"stopping" details:@{@"stopReason":reason ?: @"停止测试进程"}];
+    if (self.identifier && self.pid > 0) [self killOwnedRequest];
+    // If the request is still starting, keep its reservation until the completion
+    // supplies a PID or reports failure. A late completion must never run a guest
+    // against a container already handed to a second launch.
+}
+
+- (void)killOwnedRequest {
+    NSUUID *request = self.identifier;
+    [self.extension _kill:SIGTERM];
+    __weak typeof(self) weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        AppSceneViewController *owner = weakSelf;
+        NSDictionary *active = [IOSVMProcessRegistry.shared activeRecordForContainer:owner.dataUUID ?: @""];
+        if (owner && !owner.isAppTerminationCleanUpCalled && [active[@"id"] isEqual:owner.processLaunchID] &&
+            [owner.identifier isEqual:request] && owner.isAppRunning) [owner.extension _kill:SIGKILL];
+    });
+}
+
 - (void)_performActionsForUIScene:(UIScene *)scene withUpdatedFBSScene:(id)fbsScene settingsDiff:(FBSSceneSettingsDiff *)diff fromSettings:(UIApplicationSceneSettings *)settings transitionContext:(id)context lifecycleActionType:(uint32_t)actionType {
+    if (!NSThread.isMainThread) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf _performActionsForUIScene:scene withUpdatedFBSScene:fbsScene
+                settingsDiff:diff fromSettings:settings transitionContext:context
+                lifecycleActionType:actionType];
+        });
+        return;
+    }
+
     if(!self.isAppRunning) {
         [self appTerminationCleanUp];
     }
@@ -335,14 +471,34 @@
 }
 
 - (BOOL)isAppRunning {
-    return _pid > 0 && getpgid(_pid) > 0;
+    if (_pid <= 0 || self.isAppTerminationCleanUpCalled) return NO;
+    if (self.processAuditToken57) {
+        audit_token_t token = {0}; token.val[5] = (uint32_t)(self.processAuditToken57 >> 32); token.val[7] = (uint32_t)self.processAuditToken57;
+        errno = 0; csops_audittoken(_pid, 0, NULL, 0, &token);
+        return errno != ESRCH;
+    }
+    errno = 0;
+    return getpgid(_pid) > 0 || errno == EPERM;
 }
 
 - (void)appTerminationCleanUp {
     if(_isAppTerminationCleanUpCalled) {
         return;
     }
+    // Request cancellation is not proof of process death. Keep the container
+    // reserved until the identity/liveness check confirms the owned process ended.
+    if (self.pid > 0 && self.isAppRunning) {
+        [self stopOwnedRequestWithReason:self.terminalReason ?: @"扩展会话结束，正在停止测试进程。"];
+        return;
+    }
     _isAppTerminationCleanUpCalled = true;
+    if (self.stopObserver) { [NSNotificationCenter.defaultCenter removeObserver:self.stopObserver];self.stopObserver = nil; }
+    [self.processTimer invalidate];self.processTimer = nil;
+    if (self.processLaunchID) {
+        [IOSVMProcessRegistry.shared finishLaunch:self.processLaunchID state:self.terminalState ?: @"exited"
+            reason:self.terminalReason ?: @"测试进程已结束；退出原因未经确认。"];
+    }
+    [self.externalDataURL stopAccessingSecurityScopedResource];self.externalDataURL = nil;
     dispatch_async(dispatch_get_main_queue(), ^{
         if(self.sceneID) {
             [[PrivClass(FBSceneManager) sharedInstance] destroyScene:self.sceneID withTransitionContext:nil];
@@ -360,7 +516,7 @@
         self.presenter = nil;
         
         [self.delegate appSceneVCAppDidExit:self];
-        [MultitaskManager unregisterMultitaskContainerWithContainer:self.dataUUID];
+
     });
 }
 

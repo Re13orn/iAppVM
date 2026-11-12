@@ -1,0 +1,18 @@
+{
+  "acorn": {
+    "version": "8.15.0",
+    "source": "https://github.com/acornjs/acorn",
+    "packageIntegrity": "sha512-NZyJarBfL7nWwIq+FDL6Zp/yHEhePMNnnJ0y3qfieCrmNvYct8uvtiV41UvlSe6apAfk0fY1FbWx+NwfmpvtTg=="
+  },
+  "objc": {
+    "source": "https://github.com/frida/frida-tools/tree/14.6.0",
+    "artifact": "frida_tools/bridges/objc.js",
+    "fridaToolsVersion": "14.6.0"
+  },
+  "sha256": {
+    "acorn.js": "fdb08546776ec6228b03e8d02b40d4ab3255bae5f401adba7ff5dad927ac5c9c",
+    "objc.js": "9a276983014b368163c62adb7f5e473ae5ed6020e24058324152ee3c627aaf9a",
+    "analyze.js": "b8cad4e459beea4acebdfdb0c60c6c3c79e5a89efbe00c047c98f95226864194",
+    "phone-logger.js": "e52b5ada230838cdb60b0f62d8155ec302509ddb6bf801b0aec3731efe920663"
+  }
+}

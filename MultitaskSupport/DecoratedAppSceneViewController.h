@@ -14,9 +14,9 @@ API_AVAILABLE(ios(16.0))
 @property(nonatomic) CGFloat scaleRatio;
 - (instancetype)initWindowName:(NSString*)windowName bundleId:(NSString*)bundleId dataUUID:(NSString*)dataUUID rootVC:(UIViewController*)rootVC;
 - (void)minimizeWindow;
+- (void)closeWindow;
 - (void)minimizeWindowPiP;
 - (void)unminimizeWindowPiP;
 - (void)updateVerticalConstraints;
 @property(nonatomic, copy) void (^pidAvailableHandler)(NSNumber *pid, NSError *error);
 @end
-

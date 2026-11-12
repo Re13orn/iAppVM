@@ -49,6 +49,7 @@ struct LCSettingsView: View {
     @AppStorage("LCFrameShortcutIcons") var frameShortIcon = false
     @AppStorage("LCSwitchAppWithoutAsking") var silentSwitchApp = false
     @AppStorage("LCOpenWebPageWithoutAsking") var silentOpenWebPage = false
+    @State private var appLanguage: LCLanguageOverride = LCLanguageOverride.stored
     @AppStorage("LCDontSignApp", store: LCUtils.appGroupUserDefault) var dontSignApp = false
     @AppStorage("LCStrictHiding", store: LCUtils.appGroupUserDefault) var strictHiding = false
     @AppStorage("dynamicColors", store: LCUtils.appGroupUserDefault) var dynamicColors = true
@@ -88,7 +89,7 @@ struct LCSettingsView: View {
                             Button {
                                 Task{ await importCertificate() }
                             } label: {
-                                Text("lc.settings.importCertificate".loc)
+                                Text("lc.settings.importCertificate.p12".loc)
                             }
                         } else {
                             Button {
@@ -202,6 +203,17 @@ struct LCSettingsView: View {
                 }
                 
                 Section{
+                    Picker(selection: $appLanguage) {
+                        ForEach(LCLanguageOverride.allCases) { language in
+                            Text(language.displayName).tag(language)
+                        }
+                    } label: {
+                        Text("lc.settings.language".loc)
+                    }
+                    .onChange(of: appLanguage) { newLanguage in
+                        LCLanguageOverride.stored = newLanguage
+                        sharedModel.appLanguageGeneration += 1
+                    }
                     Toggle(isOn: $dynamicColors) {
                         Text("lc.settings.dynamicColors".loc)
                     }
@@ -210,7 +222,7 @@ struct LCSettingsView: View {
                             Text("lc.settings.darkModeIcon".loc)
                         }
                     }
-                    
+
                 } header: {
                     Text("lc.settings.interface".loc)
                 } footer: {
@@ -286,7 +298,7 @@ struct LCSettingsView: View {
                 Section {
                     HStack {
                         Image("GitHub")
-                        Button("LiveContainer/LiveContainer") {
+                        Button("Upstream · LiveContainer") {
                             openGitHub()
                         }
                     }
@@ -308,7 +320,8 @@ struct LCSettingsView: View {
                     Text("lc.settings.warning".loc)
                 }
                 
-                VStack{
+                VStack(spacing: 6) {
+                    Text("iAppVM").font(.headline)
                     Text(LCUtils.getVersionInfo())
                         .foregroundStyle(.gray)
                         .onTapGesture(count: 5) {
@@ -325,53 +338,53 @@ struct LCSettingsView: View {
                             Text("lc.settings.injectLCItself".loc)
                         }
                         Toggle(isOn: $ignoreJITOnLaunch) {
-                            Text("Ignore JIT on Launching App")
+                            Text("lc.settings.dev.ignoreJitOnLaunch".loc)
                         }
                         Toggle(isOn: $keepSelectedWhenQuit) {
-                            Text("Keep Selected App when Quit")
+                            Text("lc.settings.dev.keepSelected".loc)
                         }
                         Toggle(isOn: $waitForDebugger) {
-                            Text("Wait For Debugger")
+                            Text("lc.settings.dev.waitForDebugger".loc)
                         }
                         Toggle(isOn: $sharePrivateDataWithLiveProcess) {
-                            Text("Allow Private Data access from LiveProcess")
+                            Text("lc.settings.dev.sharePrivateData".loc)
                         }
                         Toggle(isOn: $disableLiveProcessWatchdog) {
-                            Text("Disable LiveProcess watchdog termination")
+                            Text("lc.settings.dev.disableWatchdog".loc)
                         }
                         Button {
                             export()
                         } label: {
-                            Text("Export Cert")
+                            Text("lc.settings.dev.exportCertificate".loc)
                         }
                         Button {
                             exportDyld()
                         } label: {
-                            Text("Export Dyld")
+                            Text("lc.settings.dev.exportDyld".loc)
                         }
                         Button {
                             Task { await nukeSideStore() }
                         } label: {
-                            Text("Nuke SideStore")
+                            Text("lc.settings.dev.nukeSideStore".loc)
                         }
                         Button {
                             exportMainBundle()
                         } label: {
-                            Text("Export Main Bundle")
+                            Text("lc.settings.dev.exportMainBundle".loc)
                         }
                         Button {
                             resetSymbolOffsets()
                         } label: {
-                            Text("Reset Symbol Offsets")
+                            Text("lc.settings.dev.resetSymbolOffsets".loc)
                         }
                         Button {
                             presentFLEXOverlay()
                         } label: {
-                            Text("Show FLEX Overlay")
+                            Text("lc.settings.dev.showFlex".loc)
                         }
                         .disabled(NSClassFromString("FLEXManager") == nil)
                     } header: {
-                        Text("Developer Settings")
+                        Text("lc.settings.dev.header".loc)
                     } footer: {
                         Text("lc.settings.injectLCItselfDesc".loc)
                     }
@@ -429,19 +442,18 @@ struct LCSettingsView: View {
             }, onDismiss: {
                 certificateImportFileAlert.close(result: nil)
             })
-            .textFieldAlert(
-                isPresented: $certificateImportPasswordAlert.show,
-                title: "lc.settings.importCertificateInputPassword".loc,
-                text: $certificateImportPasswordAlert.initVal,
-                placeholder: "",
-                action: { newText in
-                    certificateImportPasswordAlert.close(result: newText)
-                },
-                actionCancel: {_ in
-                    certificateImportPasswordAlert.close(result: nil)
-                    certificateImportPasswordAlert.show = false
+            .alert("lc.settings.importCertificateInputPassword".loc, isPresented: $certificateImportPasswordAlert.show) {
+                SecureField("lc.settings.certificatePassword".loc, text: $certificateImportPasswordAlert.initVal)
+                Button("lc.common.ok".loc) {
+                    let password = certificateImportPasswordAlert.initVal
+                    certificateImportPasswordAlert.initVal = ""
+                    certificateImportPasswordAlert.close(result: password)
                 }
-            )
+                Button("lc.common.cancel".loc, role: .cancel) {
+                    certificateImportPasswordAlert.initVal = ""
+                    certificateImportPasswordAlert.close(result: nil)
+                }
+            }
         }
         .navigationViewStyle(StackNavigationViewStyle())
         .onAppear() {
@@ -559,6 +571,8 @@ struct LCSettingsView: View {
         guard let certificatePassword = await certificateImportPasswordAlert.open() else {
             return
         }
+        let accessing = certificateURL.startAccessingSecurityScopedResource()
+        defer { if accessing { certificateURL.stopAccessingSecurityScopedResource() } }
         let certificateData : Data
         do {
             certificateData = try Data(contentsOf: certificateURL)
@@ -568,18 +582,25 @@ struct LCSettingsView: View {
             return
         }
         
-        guard let _ = LCUtils.getCertTeamId(withKeyData: certificateData, password: certificatePassword) else {
-            errorInfo = "lc.settings.invalidCertError".loc
+        if let error = LCUtils.validateSigningKey(certificateData, password: certificatePassword) {
+            errorInfo = error
             errorShow = true
             return
         }
 
-        LCUtils.appGroupUserDefault.set(certificateData, forKey: "LCCertificateData")
-        LCUtils.appGroupUserDefault.set(certificatePassword, forKey: "LCCertificatePassword")
+        if let error = LCSharedUtils.storeDeviceSigningCertificate(certificateData, password: certificatePassword) {
+            errorInfo = error
+            errorShow = true
+            return
+        }
+        LCUtils.appGroupUserDefault.removeObject(forKey: "LCCertificateData")
+        LCUtils.appGroupUserDefault.removeObject(forKey: "LCCertificatePassword")
         LCUtils.appGroupUserDefault.set(NSDate.now, forKey: "LCCertificateUpdateDate")
         certificateDataFound = true
 
         UserDefaults.standard.set(LCSharedUtils.appGroupID(), forKey: "LCAppGroupID")
+        successInfo = "lc.settings.deviceSigningConfigured".loc
+        successShow = true
     }
     
     func importCertificateFromSideStore() async {
@@ -664,6 +685,7 @@ struct LCSettingsView: View {
             return
         }
 
+        LCSharedUtils.removeDeviceSigningCertificate()
         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificateData")
         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificatePassword")
         LCUtils.appGroupUserDefault.set(nil, forKey: "LCCertificateUpdateDate")

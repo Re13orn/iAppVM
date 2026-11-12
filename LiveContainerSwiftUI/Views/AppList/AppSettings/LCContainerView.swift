@@ -22,6 +22,7 @@ struct LCContainerView : View {
     let delegate : LCContainerViewDelegate
     @Binding var uiDefaultDataFolder : String?
     @State var settingsBundle : Bundle? = nil
+    var model : LCAppModel? = nil
     
     @StateObject private var removeContainerAlert = YesNoHelper()
     @StateObject private var deleteDataAlert = YesNoHelper()
@@ -38,11 +39,12 @@ struct LCContainerView : View {
     @State private var successShow = false
     @State private var successInfo = ""
     
-    init(container: LCContainer, uiDefaultDataFolder : Binding<String?>, delegate: LCContainerViewDelegate) {
+    init(container: LCContainer, uiDefaultDataFolder : Binding<String?>, delegate: LCContainerViewDelegate, model: LCAppModel? = nil) {
         self._container = ObservedObject(initialValue: container)
         self.delegate = delegate
         self._typingContainerName = State(initialValue: container.name)
         self._uiDefaultDataFolder = Binding(projectedValue: uiDefaultDataFolder)
+        self.model = model
     }
     
     var body: some View {
@@ -110,6 +112,35 @@ struct LCContainerView : View {
                                 .onSubmit {
                                     saveIDFV()
                                 }
+                        }
+                    }
+                }
+
+                Section {
+                    NavigationLink {
+                        LCContainerFilesView(root: container.containerURL, directory: container.containerURL)
+                    } label: {
+                        Label("lc.container.browseFiles".loc, systemImage: "folder.badge.gearshape")
+                    }
+                    if let model {
+                        NavigationLink {
+                            LCSandboxBackupsView(model: model, container: container.folderName)
+                        } label: {
+                            Label("lc.container.snapshot".loc, systemImage: "camera.on.rectangle")
+                        }
+                    }
+                } footer: {
+                    Text("lc.container.probeLogHint".loc)
+                }
+
+                Section {
+                    DisclosureGroup("lc.tools.advancedLaunch".loc) {
+                        NavigationLink {
+                            LCTestingRuntimeView(root: container.containerURL, isRunning: {
+                                LCSharedUtils.getContainerUsingLCScheme(withFolderName: container.folderName) != nil
+                            })
+                        } label: {
+                            Label("lc.container.testRunHeader".loc, systemImage: "terminal")
                         }
                     }
                 }
@@ -272,6 +303,13 @@ struct LCContainerView : View {
         guard let ans = await removeContainerAlert.open(), ans else {
             return
         }
+        let lease: LCSandboxBackupStore.Lease
+        do { lease = try LCSandboxBackupStore.reserve(container.containerURL) }
+        catch { errorInfo = error.localizedDescription; errorShow = true; return }
+        defer { withExtendedLifetime(lease) {} }
+        guard !IOSVMProcessRegistry.shared.isContainerBusy(container.folderName) else {
+            errorInfo = "lc.container.closeAppFirst".loc; errorShow = true; return
+        }
         do {
             let fm = FileManager.default
             try fm.removeItem(at: container.containerURL)
@@ -317,6 +355,13 @@ struct LCContainerView : View {
         }
         guard let ans = await deleteDataAlert.open(), ans else {
             return
+        }
+        let lease: LCSandboxBackupStore.Lease
+        do { lease = try LCSandboxBackupStore.reserve(container.containerURL) }
+        catch { errorInfo = error.localizedDescription; errorShow = true; return }
+        defer { withExtendedLifetime(lease) {} }
+        guard !IOSVMProcessRegistry.shared.isContainerBusy(container.folderName) else {
+            errorInfo = "lc.container.closeAppFirst".loc; errorShow = true; return
         }
         do {
             let fm = FileManager.default

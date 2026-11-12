@@ -69,6 +69,13 @@ struct LCTweakFolderView : View {
 
     var body: some View {
         List {
+            if isRoot {
+                Section {
+                    NavigationLink { LCFridaScriptLibraryView() } label: {
+                        LCToolRow(title: "lc.tweaks.fridaScriptLibrary".loc, subtitle: "lc.tweaks.fridaScriptLibraryDesc".loc, symbol: "doc.text")
+                    }
+                }
+            }
             Section {
                 ForEach(tweakItems, id:\.self) { tweakItem in
                     HStack {
@@ -146,7 +153,7 @@ struct LCTweakFolderView : View {
                     Button {
                         Task { await signAllTweaks() }
                     } label: {
-                        Label("sign".loc, systemImage: "signature")
+                        Label("lc.tweaks.sign".loc, systemImage: "signature")
                     }
                 }
 
@@ -154,6 +161,22 @@ struct LCTweakFolderView : View {
             ToolbarItem(placement: .topBarTrailing) {
                 if !isTweakSigning {
                     Menu {
+                        if !isRoot {
+                            Menu {
+                                Button {
+                                    installTestingProbe()
+                                } label: {
+                                    Label("lc.tweaks.installTestPlugins".loc, systemImage: "stethoscope")
+                                }
+                                Button {
+                                    installBundledTestingLibrary(name: "iOSVMHWHook")
+                                } label: {
+                                    Label("lc.tweaks.installHwHookLib".loc, systemImage: "cpu")
+                                }
+                            } label: {
+                                Label("lc.tools.pluginDevelopment".loc, systemImage: "hammer")
+                            }
+                        }
                         Button {
                             if choosingTweak {
                                 choosingTweak = false
@@ -173,7 +196,7 @@ struct LCTweakFolderView : View {
                             Label("lc.tweakView.newFolder".loc, systemImage: "folder.badge.plus")
                         }
                     } label: {
-                        Label("add", systemImage: "plus")
+                        Label("lc.tweaks.add".loc, systemImage: "plus")
                     }
                 } else {
                     ProgressView().progressViewStyle(.circular)
@@ -218,6 +241,29 @@ struct LCTweakFolderView : View {
         })
     }
     
+    func installTestingProbe() {
+        installBundledTestingLibrary(name: "iOSVMProbe")
+    }
+
+    func installBundledTestingLibrary(name: String) {
+        let fm = FileManager.default
+        guard let bundle = Bundle.main.url(forResource: "iOSVMProbe", withExtension: "bundle") else {
+            errorInfo = "lc.tweaks.missingRuntime".loc
+            errorShow = true
+            return
+        }
+        let source = bundle.appendingPathComponent(name + ".dylib")
+        let target = baseUrl.appendingPathComponent(name + ".dylib")
+        do {
+            // Existing plugins must be explicitly deleted before replacing them.
+            try fm.copyItem(at: source, to: target)
+            tweakItems.append(LCTweakItem(fileUrl: target, isFolder: false, isFramework: false, isTweak: true, isEnabled: true))
+        } catch {
+            errorInfo = error.localizedDescription
+            errorShow = true
+        }
+    }
+
     func setTweakEnabled(tweakItem: LCTweakItem, enabled: Bool) {
         if tweakItem.isEnabled == enabled {
             return

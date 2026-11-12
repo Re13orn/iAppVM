@@ -13,7 +13,13 @@ class LCAppModel: ObservableObject, Hashable {
     
     @Published var appInfo : LCAppInfo
     
-    @Published var isAppRunning = false
+    @Published private(set) var isOperationBusy = false
+    @Published private(set) var isLaunchPreparationBusy = false
+    private var processObserver: NSObjectProtocol?
+    var isAppRunning: Bool {
+        isOperationBusy || isLaunchPreparationBusy || IOSVMProcessRegistry.shared.isBundleBusy(appInfo.relativeBundlePath) ||
+            uiContainers.contains { LCSandboxBackupStore.busy($0.containerURL) }
+    }
     @Published var isSigningInProgress = false
     @Published var signProgress = 0.0
     private var observer : NSKeyValueObservation?
@@ -147,8 +153,10 @@ class LCAppModel: ObservableObject, Hashable {
     public var shouldLaunchInMultitaskMode : Bool {
         get {
             if #available(iOS 16.0, *) {
+                let defaultWindowMode = UserDefaults.standard.object(forKey: "LCLaunchInMultitaskMode") as? Bool
+                    ?? (Bundle.main.object(forInfoDictionaryKey: "IOSVMTestWindowsEnabled") as? Bool ?? false)
                 return uiIsMultitaskModeSpecificed == .yes ||
-                (uiIsMultitaskModeSpecificed == .default && UserDefaults.standard.bool(forKey: "LCLaunchInMultitaskMode"))
+                (uiIsMultitaskModeSpecificed == .default && defaultWindowMode)
             } else {
                 return false
             }
@@ -193,6 +201,10 @@ class LCAppModel: ObservableObject, Hashable {
         self.uiRemark = appInfo.remark ?? ""
         self.uiIs32bit = appInfo.is32bit
         self.uiIs32bitEmulator = appInfo.is32bitEmulator
+        processObserver = NotificationCenter.default.addObserver(forName: NSNotification.Name("IOSVMProcessesDidChange"), object: nil, queue: .main) { [weak self] note in
+            guard let self, note.userInfo?["bundle"] as? String == self.appInfo.relativeBundlePath else { return }
+            self.objectWillChange.send()
+        }
         for container in uiContainers {
             if container.folderName == uiDefaultDataFolder {
                 self.uiSelectedContainer = container;
@@ -201,6 +213,10 @@ class LCAppModel: ObservableObject, Hashable {
         }
     }
     
+    deinit {
+        if let processObserver { NotificationCenter.default.removeObserver(processObserver) }
+    }
+
     static func == (lhs: LCAppModel, rhs: LCAppModel) -> Bool {
         return lhs === rhs
     }
@@ -211,10 +227,56 @@ class LCAppModel: ObservableObject, Hashable {
     
     // You should let LCAppModel.runApp to decide whether to run in multitask mode, but you may override the multitask parameter if necessary
     func runApp(multitask: Bool? = nil, containerFolderName : String? = nil, bundleIdOverride : String? = nil, urlStr : String? = nil, forceJIT: Bool? = nil) async throws{
-        if isAppRunning {
-            return
+        let canPrepare = await MainActor.run {
+            guard !isOperationBusy && !isLaunchPreparationBusy else { return false }
+            isLaunchPreparationBusy = true
+            return true
         }
-        
+        guard canPrepare else { return }
+        defer { Task { @MainActor in isLaunchPreparationBusy = false } }
+
+        // Returning to an existing window must not re-sign or mutate its live configuration.
+        if let current = containerFolderName ?? uiSelectedContainer?.folderName,
+           await bringExistingMultitaskWindowIfNeeded(dataUUID: current, urlScheme: urlStr) { return }
+        let launchLease = try await MainActor.run { () throws -> LCSandboxBackupStore.Lease? in
+            guard let container = uiContainers.first(where: { $0.folderName == (containerFolderName ?? uiSelectedContainer?.folderName) }) ?? uiSelectedContainer ?? uiContainers.first else { return nil }
+            if let context = try? LCSandboxBackupManager.context(self, container), LCSandboxBackupStore.pending(context) {
+                throw LCSandboxBackupStore.fail("lc.launch.pendingRestoreExists".loc)
+            }
+            return try LCSandboxBackupStore.reserve(container.containerURL)
+        }
+        defer { withExtendedLifetime(launchLease) {} }
+        let checks = await MainActor.run { LCLaunchPreflight.check(self, multitask: multitask) }
+        if checks.contains(where: \.blocking) { throw LCLaunchPreflight.Failure(issues: checks) }
+        if checks.contains(where: { $0.id == "signing" }), IOSVMDeviceSigning.configured {
+            isSigningInProgress = true
+            do { try await IOSVMDeviceSigning.sign(appInfo); isSigningInProgress = false }
+            catch { isSigningInProgress = false; throw error }
+        }
+
+        // Importing a certificate also unlocks older queued imports on their next launch.
+        if let disk = NSDictionary(contentsOfFile: appInfo.bundlePath() + "/LCAppInfo.plist") as? [String: Any] {
+            appInfo.info().setDictionary(disk)
+            if disk["IOSVMNeedsExternalSigning"] as? Bool == true && IOSVMDeviceSigning.configured {
+                isSigningInProgress = true
+                defer { isSigningInProgress = false }
+                try await IOSVMDeviceSigning.sign(appInfo)
+            }
+        }
+        // Keep imports unavailable until the companion has finished transferring all signed code.
+        let requestURL = LCPath.docPath.appendingPathComponent("iOSVM/SigningRequests/" + appInfo.relativeBundlePath + ".json")
+        if let data = try? LCFridaLogBoundary.readData(requestURL, inside: LCPath.docPath, maximumBytes: 262144),
+           let request = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let state = request["state"] as? String, state != "ready" {
+            throw "lc.launch.signingIncomplete".loc
+        }
+        // A Mac companion may have completed signing since this model was created.
+        if let disk = NSDictionary(contentsOfFile: appInfo.bundlePath() + "/LCAppInfo.plist") as? [String: Any] {
+            if disk["IOSVMNeedsExternalSigning"] as? Bool == true {
+                throw "lc.launch.waitingExternalSign".loc
+            }
+            appInfo.info().setDictionary(disk)
+        }
         if uiContainers.isEmpty {
             let newName = NSUUID().uuidString
             let newContainer = LCContainer(folderName: newName, name: newName, isShared: uiIsShared)
@@ -224,6 +286,14 @@ class LCAppModel: ObservableObject, Hashable {
             }
             appInfo.containers = uiContainers;
             newContainer.makeLCContainerInfoPlist(appIdentifier: appInfo.bundleIdentifier()!, keychainGroupId: Int.random(in: 0..<SharedModel.keychainAccessGroupCount))
+            if let writeError = newContainer.lastPlistWriteError {
+                // Roll back the registration so the next launch can retry from
+                // a clean state instead of being blocked by a half-created container.
+                uiContainers.removeAll { $0.folderName == newName }
+                if uiSelectedContainer?.folderName == newName { uiSelectedContainer = nil }
+                appInfo.containers = uiContainers
+                throw "lc.launch.containerCreateFailed %@".localizeWithFormat(writeError.localizedDescription)
+            }
             appInfo.dataUUID = newName
             uiDefaultDataFolder = newName
         }
@@ -233,7 +303,14 @@ class LCAppModel: ObservableObject, Hashable {
         let currentDataFolder = containerFolderName ?? uiSelectedContainer?.folderName
         
         let classicMode = appInfo.defaultClassicMode
-        let multitask = classicMode == 0 ? (multitask ?? shouldLaunchInMultitaskMode) : false
+        let wantsWindow = multitask ?? shouldLaunchInMultitaskMode
+        if wantsWindow && classicMode != 0 {
+            throw "lc.launch.compatNoWindow".loc
+        }
+        let multitask = wantsWindow && classicMode == 0
+        if multitask && LCUtils.liveProcessBundleIdentifier() == nil {
+            throw "lc.launch.missingLiveProcess".loc
+        }
         
         if MultitaskManager.isMultitasking() || multitask,
            let currentDataFolder {
@@ -243,6 +320,17 @@ class LCAppModel: ObservableObject, Hashable {
             
         }
         
+        // Refresh only managed startup copies, preserving each script as a separate Gum context.
+        if let folder = LCFridaSetup.folder(for: appInfo) {
+            // The bundled inspector is versioned with the host. Refresh its library
+            // source before snapshotting so an app update cannot keep running an old
+            // automatic-auth implementation from a previous selection.
+            if try LCFridaScriptStore.selection(folder: folder).scripts.contains(LCFridaKeychainInspector.scriptID) {
+                _ = try LCFridaKeychainInspector.installScript()
+            }
+            try LCFridaScriptStore.refreshBeforeLaunch(folder: folder, owner: appInfo.relativeBundlePath)
+        }
+
         // this is rerouted to bringing app to front, so not needed here?
 //        if(MultitaskManager.isUsing(container: uiSelectedContainer!.folderName)) {
 //            throw "lc.container.inUse".loc + "\n MultiTask"
@@ -313,11 +401,11 @@ class LCAppModel: ObservableObject, Hashable {
         }
         
         await MainActor.run {
-            isAppRunning = true
+            isOperationBusy = true
         }
         defer {
             Task { await MainActor.run {
-                isAppRunning = false
+                isOperationBusy = false
             }}
         }
         try await signApp(force: false)
@@ -384,7 +472,7 @@ class LCAppModel: ObservableObject, Hashable {
         appInfo.lastLaunched = Date()
 
         await MainActor.run {
-            isAppRunning = false
+            isOperationBusy = false
         }
     }
     
@@ -392,10 +480,10 @@ class LCAppModel: ObservableObject, Hashable {
         if isAppRunning {
             return
         }
-        isAppRunning = true
+        isOperationBusy = true
         defer {
             Task{ await MainActor.run {
-                self.isAppRunning = false
+                self.isOperationBusy = false
             }}
 
         }
@@ -520,6 +608,7 @@ class LCAppModel: ObservableObject, Hashable {
     private func bringExistingMultitaskWindowIfNeeded(dataUUID: String, urlScheme: String?) async -> Bool {
         guard #available(iOS 16.0, *) else { return false }
         return await MainActor.run {
+            guard MultitaskManager.isUsing(container: dataUUID) else { return false }
             if let urlScheme {
                 UserDefaults.standard.setValue(urlScheme, forKey: "launchAppUrlScheme")
             }

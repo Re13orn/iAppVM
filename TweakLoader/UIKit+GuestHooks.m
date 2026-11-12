@@ -1,13 +1,16 @@
 @import UIKit;
+#import <objc/message.h>
 #import "LCSharedUtils.h"
 #import "UIKitPrivate.h"
 #import "../LiveContainer/utils.h"
 #import <LocalAuthentication/LocalAuthentication.h>
 #import "Localization.h"
+#import "../LiveContainer/iOSVMRuntime.h"
 
 UIInterfaceOrientation LCOrientationLock = UIInterfaceOrientationUnknown;
 NSMutableArray<NSString*>* LCSupportedUrlSchemes = nil;
 BOOL launchURLProcessed = NO;
+static BOOL firstUIAppearanceRecorded = NO;
 
 __attribute__((constructor))
 static void UIKitGuestHooksInit() {
@@ -19,6 +22,10 @@ static void UIKitGuestHooksInit() {
     swizzle(UIApplication.class, @selector(setDelegate:), @selector(hook_setDelegate:));
     swizzle(UIScene.class, @selector(scene:didReceiveActions:fromTransitionContext:), @selector(hook_scene:didReceiveActions:fromTransitionContext:));
     swizzle(UIScene.class, @selector(openURL:options:completionHandler:), @selector(hook_openURL:options:completionHandler:));
+    swizzle(UIWindow.class, @selector(makeKeyAndVisible), @selector(hook_makeKeyAndVisible));
+    swizzle(UIWindow.class, @selector(makeKeyWindow), @selector(hook_makeKeyWindow));
+    swizzle(UIWindow.class, @selector(setHidden:), @selector(hook_setHidden:));
+    swizzle(UIViewController.class, @selector(viewDidAppear:), @selector(hook_viewDidAppear:));
     NSInteger LCOrientationLockDirection = [NSUserDefaults.guestAppInfo[@"LCOrientationLock"] integerValue];
     if(LCOrientationLockDirection != 0 && [UIDevice.currentDevice userInterfaceIdiom] == UIUserInterfaceIdiomPhone) {
         switch (LCOrientationLockDirection) {
@@ -638,9 +645,6 @@ static LCControlAppURLHandling LCHandleControlAppURL(NSURL *url, NSString** modi
 - (void)hook_setDelegate:(id<UIApplicationDelegate>)delegate {
     if(![delegate respondsToSelector:@selector(application:configurationForConnectingSceneSession:options:)]) {
         // Fix old apps black screen when UIApplicationSupportsMultipleScenes is YES
-        swizzle(UIWindow.class, @selector(makeKeyAndVisible), @selector(hook_makeKeyAndVisible));
-        swizzle(UIWindow.class, @selector(makeKeyWindow), @selector(hook_makeKeyWindow));
-        swizzle(UIWindow.class, @selector(setHidden:), @selector(hook_setHidden:));
         // Fix apps that do not support UISceneDelegate getting 0 status bar frame
         swizzle(UIApplication.class, @selector(statusBarFrame), @selector(hook_statusBarFrame));
     }
@@ -732,6 +736,18 @@ static LCControlAppURLHandling LCHandleControlAppURL(NSURL *url, NSString** modi
 
 @implementation UIViewController(LiveContainerHook)
 
+- (void)hook_viewDidAppear:(BOOL)animated {
+    [self hook_viewDidAppear:animated];
+    if(firstUIAppearanceRecorded) return;
+    firstUIAppearanceRecorded = YES;
+    Class runtime = NSClassFromString(@"IOSVMRuntime");
+    if([runtime respondsToSelector:@selector(stage:details:)]) {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(runtime, @selector(stage:details:),
+            @"firstUIAppearanceObserved",
+            @{@"controller":NSStringFromClass(self.class),@"windowVisible":@(self.view.window.windowScene != nil)});
+    }
+}
+
 - (UIInterfaceOrientationMask)hook___supportedInterfaceOrientations {
     if(LCOrientationLock == UIInterfaceOrientationLandscapeRight) {
         return UIInterfaceOrientationMaskLandscape;
@@ -755,6 +771,11 @@ static LCControlAppURLHandling LCHandleControlAppURL(NSURL *url, NSString** modi
 - (void)hook_makeKeyAndVisible {
     [self updateWindowScene];
     [self hook_makeKeyAndVisible];
+    Class runtime = NSClassFromString(@"IOSVMRuntime");
+    if([runtime respondsToSelector:@selector(stage:details:)]) {
+        ((void (*)(id, SEL, id, id))objc_msgSend)(runtime, @selector(stage:details:),
+            @"windowVisible", @{@"window":NSStringFromClass(self.class)});
+    }
 }
 - (void)hook_makeKeyWindow {
     [self updateWindowScene];

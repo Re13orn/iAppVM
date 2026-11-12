@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10C0DE00000000000000501 /* CompatibilityMatrix.json in Resources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000502 /* CompatibilityMatrix.json */; };
+		A10C0DE00000000000000401 /* ScriptSupport.bundle in Resources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000402 /* ScriptSupport.bundle */; };
+        A10C0DE00000000000000301 /* IOSVMSocketProxy.m in Sources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000302 /* IOSVMSocketProxy.m */; };
+		A10C0DE00000000000000201 /* IOSVMGuestSession.m in Sources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000202 /* IOSVMGuestSession.m */; };
+		A10C0DE00000000000000101 /* IOSVMNetwork.m in Sources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000102 /* IOSVMNetwork.m */; };
+		A10C0DE00000000000000011 /* iOSVMRuntime.m in Sources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000012 /* iOSVMRuntime.m */; };
+		A10C0DE00000000000000001 /* iOSVMProbe.bundle in Resources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000002 /* iOSVMProbe.bundle */; };
+		A10C0DE00000000000000021 /* iOSVMFrida.bundle in Resources */ = {isa = PBXBuildFile; fileRef = A10C0DE00000000000000022 /* iOSVMFrida.bundle */; };
 		173545AF2E2C7913001B3B4C /* SideStoreSupport.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 173545A82E2C7913001B3B4C /* SideStoreSupport.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		17413FBC2D9C0BAE00F3F928 /* LiveContainerSwiftUI.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 17413FB52D9C0BAE00F3F928 /* LiveContainerSwiftUI.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		174140902D9C0E8200F3F928 /* TweakLoader.dylib in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 1741403A2D9C0D0000F3F928 /* TweakLoader.dylib */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
@@ -155,6 +163,18 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		A10C0DE00000000000000502 /* CompatibilityMatrix.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = Resources/CompatibilityMatrix.json; sourceTree = SOURCE_ROOT; };
+		A10C0DE00000000000000402 /* ScriptSupport.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = TestTools/Frida/ScriptSupport.bundle; sourceTree = SOURCE_ROOT; };
+        A10C0DE00000000000000302 /* IOSVMSocketProxy.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = IOSVMSocketProxy.m; sourceTree = "<group>"; };
+        A10C0DE00000000000000303 /* IOSVMSocketProxy.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IOSVMSocketProxy.h; sourceTree = "<group>"; };
+		A10C0DE00000000000000202 /* IOSVMGuestSession.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = IOSVMGuestSession.m; sourceTree = "<group>"; };
+		A10C0DE00000000000000203 /* IOSVMGuestSession.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IOSVMGuestSession.h; sourceTree = "<group>"; };
+		A10C0DE00000000000000102 /* IOSVMNetwork.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = IOSVMNetwork.m; sourceTree = "<group>"; };
+		A10C0DE00000000000000103 /* IOSVMNetwork.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = IOSVMNetwork.h; sourceTree = "<group>"; };
+		A10C0DE00000000000000012 /* iOSVMRuntime.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = iOSVMRuntime.m; sourceTree = "<group>"; };
+		A10C0DE00000000000000013 /* iOSVMRuntime.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = iOSVMRuntime.h; sourceTree = "<group>"; };
+		A10C0DE00000000000000002 /* iOSVMProbe.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = Resources/iOSVMProbe.bundle; sourceTree = SOURCE_ROOT; };
+		A10C0DE00000000000000022 /* iOSVMFrida.bundle */ = {isa = PBXFileReference; lastKnownFileType = wrapper.cfbundle; path = Resources/iOSVMFrida.bundle; sourceTree = SOURCE_ROOT; };
 		172978E8302EAF07004A3E78 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		172CA8542D9D721700CF6989 /* dyld_bypass_validation.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = dyld_bypass_validation.m; sourceTree = "<group>"; };
 		172CA8552D9D721700CF6989 /* FoundationPrivate.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = FoundationPrivate.h; sourceTree = "<group>"; };
@@ -216,6 +236,7 @@
 				DocumentPicker.m,
 				Notification.m,
 				TweakLoader.m,
+				IOSVMPluginPlan.m,
 				"UIKit+GuestHooks.m",
 			);
 			target = 174140392D9C0D0000F3F928 /* TweakLoader */;
@@ -412,6 +433,14 @@
 		172CA85F2D9D721700CF6989 /* LiveContainer */ = {
 			isa = PBXGroup;
 			children = (
+				A10C0DE00000000000000012 /* iOSVMRuntime.m */,
+                A10C0DE00000000000000302 /* IOSVMSocketProxy.m */,
+                A10C0DE00000000000000303 /* IOSVMSocketProxy.h */,
+				A10C0DE00000000000000102 /* IOSVMNetwork.m */,
+				A10C0DE00000000000000202 /* IOSVMGuestSession.m */,
+				A10C0DE00000000000000203 /* IOSVMGuestSession.h */,
+				A10C0DE00000000000000103 /* IOSVMNetwork.h */,
+				A10C0DE00000000000000013 /* iOSVMRuntime.h */,
 				E16D95762E1CD49E0068EB63 /* LCMachOUtils.h */,
 				E1292C032DCA3C160065E12D /* main.c */,
 				E1292C1A2DCA48F00065E12D /* Tweaks */,
@@ -446,6 +475,9 @@
 		17DCE9942C7067EC00731D42 = {
 			isa = PBXGroup;
 			children = (
+				A10C0DE00000000000000002 /* iOSVMProbe.bundle */,
+		A10C0DE00000000000000022 /* iOSVMFrida.bundle */,
+		A10C0DE00000000000000402 /* ScriptSupport.bundle */,
 				E16D9BA02E1D48DE0068EB63 /* README.md */,
 				17B0F8452DE16FE4008110EA /* xcconfigs */,
 				E1292C242DCA4E6F0065E12D /* MultitaskSupport */,
@@ -898,6 +930,10 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A10C0DE00000000000000501 /* CompatibilityMatrix.json in Resources */,
+				A10C0DE00000000000000001 /* iOSVMProbe.bundle in Resources */,
+		A10C0DE00000000000000021 /* iOSVMFrida.bundle in Resources */,
+		A10C0DE00000000000000401 /* ScriptSupport.bundle in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -941,7 +977,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\nINFO_PLIST=\"${TARGET_BUILD_DIR}\"/\"${INFOPLIST_PATH}\"\n\n# Get current Git branch and commit hash\nCONFIG_BRANCH=$(git rev-parse --abbrev-ref HEAD)\nCONFIG_COMMIT=$(git log -1 --format=%h)\n\n# Combine values into a version info string\nLCVersionInfo=\"$CONFIGURATION ($CONFIG_BRANCH/$CONFIG_COMMIT)\"\n\n/usr/libexec/PlistBuddy -c \"Add :LCVersionInfo string $LCVersionInfo\" \"${INFO_PLIST}\"\ncp -n -r \"$SRCROOT\"/Resources/*.lproj \"$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH\"\necho 1\n";
+			shellScript = "# Type a script or drag a script file from your workspace to insert its path.\nINFO_PLIST=\"${TARGET_BUILD_DIR}\"/\"${INFOPLIST_PATH}\"\n\n# Get current Git branch and commit hash\nCONFIG_BRANCH=$(git rev-parse --abbrev-ref HEAD)\nCONFIG_COMMIT=$(git log -1 --format=%h)\n\n# Combine values into a version info string\nLCVersionInfo=\"$CONFIGURATION ($CONFIG_BRANCH/$CONFIG_COMMIT)\"\n\n/usr/libexec/PlistBuddy -c \"Add :LCVersionInfo string $LCVersionInfo\" \"${INFO_PLIST}\"\ncp -R \"$SRCROOT\"/Resources/*.lproj \"$TARGET_BUILD_DIR/$CONTENTS_FOLDER_PATH\"\necho 1\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -1019,6 +1055,10 @@
 				E16D95742E1CD2980068EB63 /* LCMachOUtils.m in Sources */,
 				E1292C082DCA434F0065E12D /* LCSharedUtils.m in Sources */,
 				E1292C0B2DCA43560065E12D /* LCBootstrap.m in Sources */,
+				A10C0DE00000000000000011 /* iOSVMRuntime.m in Sources */,
+                A10C0DE00000000000000301 /* IOSVMSocketProxy.m in Sources */,
+				A10C0DE00000000000000101 /* IOSVMNetwork.m in Sources */,
+				A10C0DE00000000000000201 /* IOSVMGuestSession.m in Sources */,
 				E1292C0A2DCA43540065E12D /* utils.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1908,7 +1948,7 @@
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				OTHER_CFLAGS = "-fcommon";
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = ("-framework", Network, "-framework", WebKit);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.livecontainer.LiveContainerShared;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;
@@ -1950,7 +1990,7 @@
 				MODULE_VERIFIER_SUPPORTED_LANGUAGES = "objective-c objective-c++";
 				MODULE_VERIFIER_SUPPORTED_LANGUAGE_STANDARDS = "gnu17 gnu++20";
 				OTHER_CFLAGS = "-fcommon";
-				OTHER_LDFLAGS = "";
+				OTHER_LDFLAGS = ("-framework", Network, "-framework", WebKit);
 				PRODUCT_BUNDLE_IDENTIFIER = com.kdt.livecontainer.LiveContainerShared;
 				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
 				SKIP_INSTALL = YES;

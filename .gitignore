@@ -7,3 +7,9 @@ packages/
 xcuserdata
 Resources/Frameworks/OpenSSL.framework
 apps_nightly.json
+build/
+Resources/iOSVMProbe.bundle/
+Resources/iOSVMFrida.bundle/
+
+__pycache__/
+*.pyc

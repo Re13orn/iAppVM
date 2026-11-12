@@ -308,15 +308,46 @@
     NSString *execPath = [NSString stringWithFormat:@"%@/%@", appPath, _infoPlist[@"CFBundleExecutable"]];
     
     // Update patch
-    int currentPatchRev = 7;
+    int currentPatchRev = 9;
     bool needPatch = [info[@"LCPatchRevision"] intValue] < currentPatchRev;
     if (needPatch || forceSign) {
         // copy-delete-move to avoid EXC_BAD_ACCESS (SIGKILL - CODESIGNING)
         NSString *backupPath = [NSString stringWithFormat:@"%@/%@_LiveContainerPatchBackUp", appPath, _infoPlist[@"CFBundleExecutable"]];
-        NSError *err;
-        [fm copyItemAtPath:execPath toPath:backupPath error:&err];
-        [fm removeItemAtPath:execPath error:&err];
-        [fm moveItemAtPath:backupPath toPath:execPath error:&err];
+        // Recover from an interrupted previous patch first: if only the backup
+        // survived, restore it, then drop the stale backup before starting over.
+        if ([fm fileExistsAtPath:backupPath]) {
+            if (![fm fileExistsAtPath:execPath]) {
+                [fm moveItemAtPath:backupPath toPath:execPath error:nil];
+            }
+            if ([fm fileExistsAtPath:execPath]) {
+                [fm removeItemAtPath:backupPath error:nil];
+            }
+        }
+        NSError *err = nil;
+        if (![fm copyItemAtPath:execPath toPath:backupPath error:&err]) {
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"SigningInProgress"];
+            completetionHandler(NO, [NSString stringWithFormat:@"Failed to back up app executable: %@",
+                err.localizedDescription ?: @"unknown error"]);
+            return;
+        }
+        if (![fm removeItemAtPath:execPath error:&err]) {
+            [fm removeItemAtPath:backupPath error:nil];
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"SigningInProgress"];
+            completetionHandler(NO, [NSString stringWithFormat:@"Failed to remove app executable before patching: %@",
+                err.localizedDescription ?: @"unknown error"]);
+            return;
+        }
+        if (![fm moveItemAtPath:backupPath toPath:execPath error:&err]) {
+            // Roll back so the installed app keeps a usable executable; if this
+            // also fails, the backup is left for the recovery step above.
+            if (![fm moveItemAtPath:backupPath toPath:execPath error:nil]) {
+                [fm copyItemAtPath:backupPath toPath:execPath error:nil];
+            }
+            [NSUserDefaults.standardUserDefaults removeObjectForKey:@"SigningInProgress"];
+            completetionHandler(NO, [NSString stringWithFormat:@"Failed to finalize app executable patch: %@",
+                err.localizedDescription ?: @"unknown error"]);
+            return;
+        }
     }
     
     bool is32bit = false;
@@ -326,7 +357,7 @@
         NSString *error = LCParseMachO(execPath.UTF8String, false, ^(const char *path, struct mach_header_64 *header, int fd, void* filePtr) {
             if(header->cputype == CPU_TYPE_ARM64) {
                 has64bitSlice |= YES;
-                int patchResult = LCPatchExecSlice(path, header, ![self dontInjectTweakLoader]);
+                int patchResult = LCPatchExecSlice(path, header, ![self dontInjectTweakLoader], info);
                 if(patchResult & PATCH_EXEC_RESULT_NO_SPACE_FOR_TWEAKLOADER) {
                     info[@"LCTweakLoaderCantInject"] = @YES;
                     info[@"dontInjectTweakLoader"] = @YES;

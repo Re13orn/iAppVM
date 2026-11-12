@@ -40,6 +40,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     @State var didAppear = false
     // ipa choosing stuff
     @State var choosingIPA = false
+    @AppStorage("IOSVMAutoFrida", store: LCUtils.appGroupUserDefault) private var autoFrida = true
     @State var errorShow = false
     @State var errorInfo = ""
     
@@ -131,13 +132,17 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 })
                 .hidden()
                 
-                LazyVStack {
+                LazyVStack(spacing: 12) {
                     ForEach(filteredApps, id: \.self) { app in
                         LCAppBanner(appModel: app, delegate: self)
                     }
                     .transition(.scale)
                 }
-                .padding()
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 16)
+                .frame(maxWidth: 720)
+                .frame(maxWidth: .infinity)
                 .animation(searchContext.isTyping ? nil : .easeInOut, value: filteredApps)
 
                 VStack {
@@ -189,9 +194,13 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                     }
 
                     let appCount = sharedModel.isHiddenAppUnlocked ? filteredApps.count + filteredHiddenApps.count : filteredApps.count
-                    Text(appCount > 0 || searchContext.debouncedQuery != "" ? "lc.appList.appCounter %lld".localizeWithFormat(appCount) : (sharedModel.multiLCStatus == 2 ? "lc.appList.convertToSharedToShowInLC2".loc : "lc.appList.installTip".loc))
+                    if appCount == 0 {
+                        LCToolEmptyState(title: searchContext.debouncedQuery.isEmpty ? "lc.appList.empty.addTestApp".loc : "lc.appList.empty.noMatch".loc, message: searchContext.debouncedQuery.isEmpty ? "lc.appList.empty.message".loc : "lc.appList.empty.searchHint".loc, symbol: searchContext.debouncedQuery.isEmpty ? "square.and.arrow.down" : "magnifyingglass")
+                    }
+                    Text("lc.appList.appCounter %lld".localizeWithFormat(appCount))
+                        .font(.footnote)
                         .padding(.horizontal)
-                        .foregroundStyle(.gray)
+                        .foregroundStyle(.secondary)
                         .animation(searchContext.isTyping ? nil : .easeInOut, value: appCount)
                         .onTapGesture(count: 3) {
                             Task { await authenticateUser() }
@@ -203,6 +212,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 }
 
             }
+            .background(Color(uiColor: .systemGroupedBackground))
             .navigationBarProgressBar(show:$installprogressVisible, progress: $installProgressPercentage)
             .coordinateSpace(name: "scroll")
             .onAppear {
@@ -218,6 +228,8 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                         if !installprogressVisible {
                             Menu {
                                 
+                                Toggle("lc.appList.autoFrida".loc, isOn: $autoFrida)
+                                Divider()
                                 Button("lc.appList.installFromIpa".loc, systemImage: "doc.badge.plus", action: {
                                     choosingIPA = true
                                 })
@@ -225,7 +237,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                                     Task{ await startInstallFromUrl() }
                                 })
                             } label: {
-                                Label("add", systemImage: "plus")
+                                Label("lc.appList.add".loc, systemImage: "plus")
                             }
                             
                         } else {
@@ -243,7 +255,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 
                         }
                     } else {
-                        Button("Help", systemImage: "questionmark") {
+                        Button("lc.appList.help".loc, systemImage: "questionmark") {
                             helpPresent = true
                         }
                     }
@@ -259,7 +271,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Picker("Sort by", selection: $sharedAppSortManager.appSortType) {
+                        Picker("lc.appList.sortBy".loc, selection: $sharedAppSortManager.appSortType) {
                             ForEach(AppSortType.allCases, id: \.self) { sortType in
                                 Label(sortType.displayName, systemImage: sortType.systemImage)
                                     .tag(sortType)
@@ -280,7 +292,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                             }
                         }
                     } label: {
-                        Label("Sort by", systemImage: "line.3.horizontal.decrease.circle")
+                        Label("lc.appList.sortBy".loc, systemImage: "line.3.horizontal.decrease.circle")
                     }
                 }
             }
@@ -408,6 +420,23 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                 isViewAppeared = true
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("IOSVMWindowFailed"))) { notification in
+            errorInfo = notification.userInfo?["error"] as? String ?? "lc.appList.windowLaunchFailed".loc
+            errorShow = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("IOSVMOpenAppTool"))) { notification in
+            guard let relative = notification.userInfo?["bundle"] as? String,
+                  let tool = notification.userInfo?["tool"] as? String,
+                  let app = (sharedModel.apps + sharedModel.hiddenApps).first(where: { $0.appInfo.relativeBundlePath == relative }) else { return }
+            if let folder = notification.userInfo?["container"] as? String,
+               let container = app.uiContainers.first(where: { $0.folderName == folder }) {
+                app.uiSelectedContainer = container
+            }
+            sharedModel.selectedTab = .apps
+            if tool == "sandbox" { openNavigationView(view: AnyView(LCAppSandboxView(model: app))) }
+            else if tool == "frida" { openNavigationView(view: AnyView(LCFridaView(model: app))) }
+            else if tool == "process" { openNavigationView(view: AnyView(LCGuestSessionView(model: app))) }
+        }
         .onChange(of: sharedModel.deepLink) { link in
             guard sharedModel.selectedTab == .apps, let link else { return }
             sharedModel.deepLink = nil
@@ -492,9 +521,45 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             app.delegate = self
         }
         didAppear = true
+        runRequestedTestWindow()
+        #if IOSVM_TESTING
+        runIOSVMTestingRoute()
+        #endif
     }
     
     
+    func runRequestedTestWindow() {
+        guard let relative = UserDefaults.standard.string(forKey: "iosvmWindowApp") else { return }
+        let container = UserDefaults.standard.string(forKey: "iosvmWindowContainer") ?? ""
+        Task { @MainActor in
+            do {
+                var app: LCAppModel?
+                for _ in 0..<50 where app == nil {
+                    app = (sharedModel.apps + sharedModel.hiddenApps)
+                        .first(where: { $0.appInfo.relativeBundlePath == relative })
+                    if app == nil { try? await Task.sleep(nanoseconds: 100_000_000) }
+                }
+                guard let app else {
+                    throw "lc.appList.windowAppNotFound".loc
+                }
+                if !container.isEmpty && !app.uiContainers.contains(where: { $0.folderName == container }) {
+                    throw "lc.appList.windowContainerMismatch".loc
+                }
+                if app.appInfo.isLocked && !sharedModel.isHiddenAppUnlocked {
+                    guard try await LCUtils.authenticateUser() else { throw "lc.appList.authFailed".loc }
+                }
+                try await app.runApp(multitask: true, containerFolderName: container.isEmpty ? nil : container)
+            } catch let error as LCLaunchPreflight.Failure {
+                IOSVMWindowLaunchReporter.record(pid:nil,error:error as NSError,bundle:relative,container:container)
+                if let app=sharedModel.apps.first(where:{$0.appInfo.relativeBundlePath==relative}) { openNavigationView(view:AnyView(LCLaunchPreflightView(model:app))) }
+            } catch {
+                IOSVMWindowLaunchReporter.record(pid: nil, error: error as NSError, bundle: relative, container: container)
+                errorInfo = error.localizedDescription
+                errorShow = true
+            }
+        }
+    }
+
     func openWebView(urlString: String) async {
         guard var urlToOpen = URLComponents(string: urlString), urlToOpen.url != nil else {
             errorInfo = "lc.appList.urlInvalidError".loc
@@ -551,6 +616,8 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             
             do {
                 try await appToLaunch.runApp(urlStr: urlToOpen.url!.absoluteString)
+            } catch is LCLaunchPreflight.Failure {
+                openNavigationView(view:AnyView(LCLaunchPreflightView(model:appToLaunch)))
             } catch {
                 errorInfo = error.localizedDescription
                 errorShow = true
@@ -575,7 +642,8 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         do {
             self.installprogressVisible = true
             try await installIpaFile(fileUrl)
-            try FileManager.default.removeItem(at: fileUrl)
+            // A desktop-imported source can be read-only; cleanup must not turn a successful install into an error.
+            LCManagedDirectory.cleanup(fileUrl)
         } catch {
             errorInfo = error.localizedDescription
             errorShow = true
@@ -589,6 +657,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     
     func installIpaFile(_ url:URL) async throws {
         let fm = FileManager()
+        let enableFrida = autoFrida
         
         let installProgress = Progress.discreteProgress(totalUnitCount: 100)
         self.installProgressPercentage = 0.0
@@ -599,13 +668,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         let decompressProgress = Progress.discreteProgress(totalUnitCount: 100)
         installProgress.addChild(decompressProgress, withPendingUnitCount: 80)
-        let payloadPath = fm.temporaryDirectory.appendingPathComponent("Payload")
-        if fm.fileExists(atPath: payloadPath.path) {
-            try fm.removeItem(at: payloadPath)
-        }
-        
-        // decompress
-        guard await decompress(url.path, fm.temporaryDirectory.path, decompressProgress) == 0 else {
+        let workspace = try LCManagedDirectory.temporaryWorkspace()
+        defer { LCManagedDirectory.cleanup(workspace) }
+        let payloadPath = workspace.appendingPathComponent("Payload")
+
+        // Decompress into this import's workspace, independent of previous attempts.
+        let decompressResult = await decompress(url.path, workspace.path, decompressProgress)
+        if decompressResult != 0 {
+            NSLog("[iOSVM] install decompress failed rc=%d for %@", decompressResult, url.path)
             throw "lc.appList.urlFileIsNotIpaError".loc
         }
 
@@ -618,12 +688,14 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
         }
         guard let appBundleName = appBundleName else {
+            NSLog("[iOSVM] install payload has no .app (contents: %@)", payloadContents.joined(separator: ", "))
             throw "lc.appList.bundleNotFondError".loc
         }
 
         let appFolderPath = payloadPath.appendingPathComponent(appBundleName)
         
         guard let newAppInfo = LCAppInfo(bundlePath: appFolderPath.path) else {
+            NSLog("[iOSVM] install LCAppInfo init failed at %@", appFolderPath.path)
             throw "lc.appList.infoPlistCannotReadError".loc
         }
 
@@ -668,7 +740,6 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             guard let installOptionChosen = await installReplaceAlert.open() else {
                 // user cancelled
                 self.installprogressVisible = false
-                try fm.removeItem(at: payloadPath)
                 return
             }
             
@@ -680,20 +751,42 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             appRelativePath = installOptionChosen.nameOfFolderToInstall
             appToReplace = installOptionChosen.appToReplace
             if installOptionChosen.isReplace {
+                // Removing the bundle of a running guest would break its loaded
+                // code and leave the registry thinking it is still alive.
+                if let appToReplace, appToReplace.isAppRunning {
+                    errorInfo = "lc.appList.appIsRunningErr".loc
+                    errorShow = true
+                    self.installprogressVisible = false
+                    return
+                }
                 try fm.removeItem(at: outputFolder)
             }
         }
         // Move it!
-        try fm.moveItem(at: appFolderPath, to: outputFolder)
+        do {
+            try fm.moveItem(at: appFolderPath, to: outputFolder)
+        } catch {
+            NSLog("[iOSVM] install moveItem failed %@ -> %@: %@", appFolderPath.path, outputFolder.path, error.localizedDescription)
+            throw error
+        }
+        // If anything below fails before the app enters the list, remove the
+        // moved bundle so half-finished imports don't silently occupy disk.
+        func abandonMovedBundle() {
+            try? fm.removeItem(at: outputFolder)
+        }
         let finalNewApp = LCAppInfo(bundlePath: outputFolder.path)
         finalNewApp?.relativeBundlePath = appRelativePath
         
         guard let finalNewApp else {
+            abandonMovedBundle()
             errorInfo = "lc.appList.appInfoInitError".loc
             errorShow = true
+            self.installprogressVisible = false
             return
         }
         
+        // Frida imports require the loader injected into the newly patched executable.
+        if enableFrida { finalNewApp.dontInjectTweakLoader = false }
         // patch and sign it
         var signError : String? = nil
         var signSuccess = false
@@ -712,6 +805,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         
         // we leave it unsigned even if signing failed
         if let signError {
+            NSLog("[iOSVM] install sign result success=%d error=%@", signSuccess, signError)
             if signSuccess {
                 errorInfo = "\("lc.appList.signSuccessWithError".loc)\n\n\(signError)"
             } else {
@@ -734,7 +828,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             finalNewApp.selectedLanguage = appToReplace.appInfo.selectedLanguage
             finalNewApp.dataUUID = appToReplace.appInfo.dataUUID
             finalNewApp.orientationLock = appToReplace.appInfo.orientationLock
-            finalNewApp.dontInjectTweakLoader = appToReplace.appInfo.dontInjectTweakLoader
+            finalNewApp.dontInjectTweakLoader = enableFrida ? false : appToReplace.appInfo.dontInjectTweakLoader
             finalNewApp.hideLiveContainer = appToReplace.appInfo.hideLiveContainer
             finalNewApp.dontLoadTweakLoader = appToReplace.appInfo.dontLoadTweakLoader
             finalNewApp.doUseLCBundleId = appToReplace.appInfo.doUseLCBundleId
@@ -750,9 +844,32 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             // enable SDK version spoof by defalut
             finalNewApp.spoofSDKVersion = true
         }
+        // Provision Gadget after preserving replacement settings, before exposing the App in the list.
+        if enableFrida {
+            do {
+                try await LCFridaSetup.prepare(finalNewApp)
+                if let name = finalNewApp.tweakFolder, !sharedModel.tweakFolderNames.contains(name) {
+                    sharedModel.tweakFolderNames.append(name)
+                }
+            } catch {
+                errorInfo = "lc.appList.importedFridaFailed %@".localizeWithFormat(error.localizedDescription)
+                errorShow = true
+            }
+        }
+        if !finalNewApp.is32bit {
+            if IOSVMDeviceSigning.configured && !finalNewApp.isShared {
+                do { try await IOSVMDeviceSigning.sign(finalNewApp) }
+                catch {
+                    errorInfo = "lc.appList.importedSignFailed %@".localizeWithFormat(error.localizedDescription)
+                    errorShow = true
+                }
+            } else if !IOSVMDeviceSigning.configured {
+                try LCFridaSetup.requestSigning(finalNewApp)
+            }
+        }
         finalNewApp.installationDate = Date.now
         
-        DispatchQueue.main.async {
+        await MainActor.run {
             if let appToReplace {
                 let newAppModel = LCAppModel(appInfo: finalNewApp, delegate: self)
                 
@@ -859,6 +976,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
     func installFromUrl(urlStr: String) async {
         // ignore any install request if we are installing another app
         if self.installprogressVisible {
+            NSLog("[iOSVM] install ignored: another installation in progress")
             return
         }
         
@@ -869,6 +987,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
         }
         
         guard var installUrl = URL(string: urlStr) else {
+            NSLog("[iOSVM] install URL invalid: %@", urlStr)
             errorInfo = "lc.appList.urlInvalidError".loc
             errorShow = true
             return
@@ -883,6 +1002,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             // install from local, we directly call local install method
             let fileExtension = installUrl.pathExtension.lowercased()
             if fileExtension != "ipa" && fileExtension != "tipa" {
+                NSLog("[iOSVM] install rejected: not an ipa: %@", urlStr)
                 errorInfo = "lc.appList.urlFileIsNotIpaError".loc
                 errorShow = true
                 return
@@ -914,6 +1034,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
 
             if !fm.isReadableFile(atPath: installUrl.path) && !didStartAccessing {
+                NSLog("[iOSVM] install ipa unreadable: %@", installUrl.path)
                 errorInfo = "lc.appList.ipaAccessError".loc
                 errorShow = true
                 return
@@ -926,42 +1047,32 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
             }
             
             do {
+                NSLog("[iOSVM] installing ipa from path: %@", installUrl.path)
                 try await installIpaFile(installUrl)
+                let inbox = LCPath.docPath.appendingPathComponent("Inbox")
+                if installUrl.deletingLastPathComponent().standardizedFileURL == inbox.standardizedFileURL {
+                    LCManagedDirectory.cleanup(installUrl)
+                }
+                NSLog("[iOSVM] install completed for %@", installUrl.path)
             } catch {
+                NSLog("[iOSVM] install threw: %@", error.localizedDescription)
                 errorInfo = error.localizedDescription
                 errorShow = true
             }
-            
-            do {
-                // delete ipa if it's in inbox
-                var shouldDelete = false
-                if let documentsDirectory = fm.urls(for: .documentDirectory, in: .userDomainMask).first {
-                    let inboxURL = documentsDirectory.appendingPathComponent("Inbox")
-                    shouldDelete = installUrl.deletingLastPathComponent().standardizedFileURL == inboxURL.standardizedFileURL
-                }
-                if shouldDelete {
-                    try fm.removeItem(at: installUrl)
-                }
-            } catch {
-                errorInfo = error.localizedDescription
-                errorShow = true
-            }
+
             return
         }
         
         do {
-            let fileManager = FileManager.default
-            let destinationURL = fileManager.temporaryDirectory.appendingPathComponent(installUrl.lastPathComponent)
-            if fileManager.fileExists(atPath: destinationURL.path) {
-                try fileManager.removeItem(at: destinationURL)
-            }
+            let workspace = try LCManagedDirectory.temporaryWorkspace()
+            defer { LCManagedDirectory.cleanup(workspace) }
+            let destinationURL = workspace.appendingPathComponent("Download.ipa")
             
             try await downloadHelper.download(url: installUrl, to: destinationURL)
             if downloadHelper.cancelled {
                 return
             }
             try await installIpaFile(destinationURL)
-            try fileManager.removeItem(at: destinationURL)
         } catch {
             errorInfo = error.localizedDescription
             errorShow = true
@@ -1056,6 +1167,8 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 
         do {
             try await appFound.runApp(multitask: nil, containerFolderName: container, urlStr: urlStr, forceJIT: forceJIT)
+        } catch is LCLaunchPreflight.Failure {
+            openNavigationView(view:AnyView(LCLaunchPreflightView(model:appFound)))
         } catch {
             errorInfo = error.localizedDescription
             errorShow = true
@@ -1244,6 +1357,7 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
                         installUrl = installUrl1
                     }
                 }
+                NSLog("[iOSVM] install deep link received: %@", installUrl ?? "<nil>")
                 if let installUrl {
                     Task { await installFromUrl(urlStr: installUrl) }
                 }
@@ -1256,3 +1370,175 @@ struct LCAppListView : View, LCAppBannerDelegate, LCAppModelDelegate {
 extension View {
     func apply<V: View>(@ViewBuilder _ block: (Self) -> V) -> V { block(self) }
 }
+
+#if IOSVM_TESTING
+// Internal device acceptance route; excluded from normal builds.
+extension LCAppListView {
+    @MainActor func runIOSVMTestingRoute() {
+        let defaults = UserDefaults.standard
+        Task { @MainActor in
+            // Let the initial NavigationView finish mounting before driving acceptance navigation.
+            try? await Task.sleep(nanoseconds: 750_000_000)
+            let arguments = ProcessInfo.processInfo.arguments
+            if arguments.contains("--iosvm-keychain-diagnose") {
+                let report = LCGuestKeychainAcceptance.diagnose(sharedModel.apps + sharedModel.hiddenApps)
+                if let app = sharedModel.apps.first(where: { $0.bundleIdentifier == "com.sixdays.trust" }) ?? sharedModel.apps.first,
+                   let container = app.uiContainers.first,
+                   report["apps"] != nil {
+                    app.uiSelectedContainer = container
+                    openNavigationView(view: AnyView(LCGuestKeychainView(model: app)))
+                }
+                return
+            }
+            if defaults.bool(forKey: "iosvmTestDownloadGadget") {
+                await LCFridaDownloadAcceptance.run()
+                openNavigationView(view: AnyView(LCFridaDownloadView()))
+            }
+            if defaults.bool(forKey: "iosvmTestRepairStorage") {
+                let app = sharedModel.apps.first { $0.appInfo.relativeBundlePath == "com.etz.exchangeApp.app" }
+                await LCStorageAcceptance.run(app: app, repairFrida: defaults.bool(forKey: "iosvmTestRepairFrida"))
+            }
+            if defaults.bool(forKey: "iosvmTestStorageDiagnostics") {
+                let fm = FileManager.default
+                let paths = ["", "iOSVM", "iOSVM/NetworkSettings", "iOSVM/NetworkSettingsV2", "iOSVM/NetworkSettings/com.etz.exchangeApp.app.json", "Tweaks", "Tweaks/iOSVM-Frida-com.etz.exchangeApp.app"]
+                var items: [[String: Any]] = []
+                for path in paths {
+                    let url = LCPath.docPath.appendingPathComponent(path)
+                    var item: [String: Any] = ["path": url.path, "writable": fm.isWritableFile(atPath: url.path)]
+                    do {
+                        let attrs = try fm.attributesOfItem(atPath: url.path)
+                        for key in [FileAttributeKey.posixPermissions, .ownerAccountID, .groupOwnerAccountID, .immutable, .appendOnly, .type] {
+                            if let value = attrs[key] { item[key.rawValue] = String(describing: value) }
+                        }
+                    } catch { item["error"] = String(describing: error) }
+                    items.append(item)
+                }
+                let probe = IOSVMGuestAccess.networkSettingsDirectory(documents: LCPath.docPath).appendingPathComponent(".iosvm-write-probe-" + UUID().uuidString)
+                var report: [String: Any] = ["uid": getuid(), "euid": geteuid(), "items": items]
+                do { try Data("probe".utf8).write(to: probe, options: .atomic); try fm.removeItem(at: probe); report["writeProbe"] = "passed" }
+                catch { report["writeProbe"] = String(describing: error); report["writeProbeDetails"] = String(describing: (error as NSError).userInfo) }
+                if let app = sharedModel.apps.first(where: { $0.appInfo.relativeBundlePath == "com.etz.exchangeApp.app" }) {
+                    report["selectedTweakFolder"] = app.uiTweakFolder ?? ""
+                }
+                let output = LCPath.docPath.appendingPathComponent("iOSVMUITests")
+                try? fm.createDirectory(at: output, withIntermediateDirectories: true)
+                try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: output.appendingPathComponent("storage-diagnostics.json"), options: .atomic)
+            }
+            if defaults.bool(forKey: "iosvmTestCleanup") {
+                // Fixed, self-owned acceptance fixtures only. No caller-supplied deletion paths.
+                let paths = [
+                    "Applications/dev.iosvm.uipreview.app",
+                    "Data/Application/67B32081-F51B-41B8-A1AB-0919CEB5643E",
+                    "Tweaks/iOSVM-UI-Preview",
+                    "iOSVM/NetworkSettings/dev.iosvm.uipreview.app.json",
+                    "iOSVM/Processes/CE907C3C-538A-49AB-9880-BA2A32F9ED88.json",
+                    "Tweaks/iOSVM-Authorization-Probe-F112",
+                    "iOSVM/NetworkSettings/dev.iosvm.sessioncheck.app.json",
+                    "Inbox/SessionCheck.ipa"
+                ]
+                var retained: [String] = []
+                for path in paths {
+                    let url = LCPath.docPath.appendingPathComponent(path)
+                    if FileManager.default.fileExists(atPath: url.path) { try? FileManager.default.removeItem(at: url) }
+                    if FileManager.default.fileExists(atPath: url.path) { retained.append(path) }
+                }
+                let output = LCPath.docPath.appendingPathComponent("iOSVMUITests")
+                try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                try? JSONSerialization.data(withJSONObject: ["retained": retained]).write(to: output.appendingPathComponent("ui-cleanup.json"), options: .atomic)
+            }
+            if let ipa = defaults.string(forKey: "iosvmTestImport"),
+               URL(fileURLWithPath: ipa).lastPathComponent == ipa {
+                // A cancelled duplicate-install dialog must not replay on every host launch.
+                defaults.removeObject(forKey: "iosvmTestImport")
+                let directory = defaults.bool(forKey: "iosvmTestSandboxBackupsImport") && ipa == "BackupCheck.ipa" ? "iOSVMUITests" : "Inbox"
+                await startInstallApp(LCPath.docPath.appendingPathComponent(directory).appendingPathComponent(ipa))
+            }
+            if let relative = defaults.string(forKey: "iosvmTestApp"),
+               let app = sharedModel.apps.first(where: { $0.appInfo.relativeBundlePath == relative }) {
+                if defaults.bool(forKey: "iosvmTestLaunch") {
+                    do { try await app.runApp(multitask: true) }
+                    catch { print("[iOSVM Testing] launch failed: \(error.localizedDescription)") }
+                }
+                if let action = defaults.string(forKey: "iosvmTestGuestKeychain") {
+                    let report = await LCGuestKeychainAcceptance.run(app, action: action)
+                    if report["state"] as? String == "passed" {
+                        openNavigationView(view: AnyView(LCGuestKeychainView(model: app)))
+                    }
+                }
+                if let action = defaults.string(forKey: "iosvmTestPresets") { await LCTestPresetAcceptance.run(app,action:action) }
+                if defaults.bool(forKey: "iosvmTestSandboxBackups") { await LCSandboxBackupAcceptance.run(app) }
+                if defaults.bool(forKey:"iosvmTestPreflightPage") { openNavigationView(view:AnyView(LCLaunchPreflightView(model:app))) }
+                else if defaults.bool(forKey:"iosvmTestPresetsPage") { openNavigationView(view:AnyView(LCTestPresetsView(model:app))) }
+                if let action = defaults.string(forKey: "iosvmTestDebugWorkbench") {
+                    await LCFridaWorkbenchAcceptance.run(app, action: action)
+                }
+                if defaults.bool(forKey:"iosvmTestFridaComputer") {
+                    openNavigationView(view:AnyView(LCFridaStartupScriptsView(model:app,computer:true)))
+                } else if defaults.bool(forKey: "iosvmTestCompatibility") {
+                    openNavigationView(view: AnyView(LCCompatibilityDiagnosticsView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestMatrix") {
+                    openNavigationView(view: AnyView(LCCompatibilityMatrixView()))
+
+                } else if defaults.bool(forKey: "iosvmTestUnifiedLogs") {
+                    openNavigationView(view: AnyView(LCAppLogsView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestKeychain") {
+                    openNavigationView(view: AnyView(LCGuestKeychainView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestScriptCompatibility"), app.appInfo.relativeBundlePath == "dev.iosvm.debugcheck.app",
+                   let script = try? LCFridaScriptStore.list().first(where:{$0.name == "Acceptance ObjC"}) {
+                    openNavigationView(view: AnyView(LCFridaScriptEditor(script:script)))
+                } else if defaults.bool(forKey: "iosvmTestFridaScripts") {
+                    openNavigationView(view: AnyView(LCFridaStartupScriptsView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestFridaLogs") {
+                    openNavigationView(view: AnyView(LCAppLogsView(model: app, initialSource: .process)))
+                } else if defaults.bool(forKey: "iosvmTestFridaVersions") {
+                    openNavigationView(view: AnyView(LCFridaVersionsView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestWorkbench") {
+                    openNavigationView(view: AnyView(LCAppWorkbenchView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestSettings") {
+                    openNavigationView(view: AnyView(LCAppSettingsView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestProcess") {
+                    openNavigationView(view: AnyView(LCGuestSessionView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestNetwork") {
+                    openNavigationView(view: AnyView(LCNetworkView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestSandbox") {
+                    openNavigationView(view: AnyView(LCAppSandboxView(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestBackupDiff") {
+                    openNavigationView(view: AnyView(LCSandboxBackupAcceptanceDetail(model: app)))
+                } else if defaults.bool(forKey: "iosvmTestBackupsPage") || defaults.bool(forKey: "iosvmTestSandboxBackups") {
+                    openNavigationView(view: AnyView(LCSandboxBackupsView(model: app)))
+                } else if !defaults.bool(forKey:"iosvmTestPreflightPage")
+                            && !defaults.bool(forKey:"iosvmTestPresetsPage")
+                            && !defaults.bool(forKey:"iosvmTestCompatibility")
+                            && !defaults.bool(forKey:"iosvmTestMatrix")
+                            && !defaults.bool(forKey:"iosvmTestScenarios")
+                            && !defaults.bool(forKey:"iosvmTestUnifiedLogs")
+                            && !defaults.bool(forKey:"iosvmTestKeychain")
+                            && defaults.string(forKey:"iosvmTestGuestKeychain") == nil {
+                    openNavigationView(view: AnyView(LCFridaView(model: app)))
+                }
+                let record: [String: Any] = ["guest": relative, "gadget": LCFridaSetup.enabled(app.appInfo),
+                                            "containers": app.uiContainers.map { $0.folderName },
+                                            "isAppRunning": app.isAppRunning,
+                                            "processes": IOSVMProcessRegistry.shared.records(forBundle: relative)]
+                let output = LCPath.docPath.appendingPathComponent("iOSVMUITests")
+                try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                try? JSONSerialization.data(withJSONObject: record, options: [.prettyPrinted, .sortedKeys])
+                    .write(to: output.appendingPathComponent("route.json"), options: .atomic)
+            }
+            if let name = defaults.string(forKey: "iosvmTestCapture"),
+               name.range(of: "^[a-zA-Z0-9_-]+$", options: .regularExpression) != nil {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                let window = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+                    .flatMap { $0.windows }.first { $0.isKeyWindow }
+                if let window {
+                    let renderer = UIGraphicsImageRenderer(bounds: window.bounds)
+                    let image = renderer.image { _ in window.drawHierarchy(in: window.bounds, afterScreenUpdates: true) }
+                    let output = LCPath.docPath.appendingPathComponent("iOSVMUITests")
+                    try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+                    try? image.pngData()?.write(to: output.appendingPathComponent(name + ".png"), options: .atomic)
+                }
+            }
+        }
+    }
+}
+#endif

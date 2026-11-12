@@ -305,6 +305,34 @@ int checkCert(NSData *key,
 }
 
 // this method is used to get teamId for ADP/Enterprise certs ,don't use it in normal jitless
+// Return only an error description; key material never enters diagnostic output.
++ (NSString *)validateKey:(NSData *)key password:(NSString *)password profile:(NSData *)profile {
+    ZSignAsset asset;
+    if (!asset.InitSimple(key.bytes, (int)key.length, nullptr, 0, password.UTF8String)) {
+        ZLog::logs.clear();
+        return @"证书或密码无效，或文件不包含私钥。";
+    }
+    X509 *cert = (X509 *)asset.m_x509Cert;
+    if (!cert || X509_check_private_key(cert, (EVP_PKEY *)asset.m_evpPKey) != 1 ||
+        X509_cmp_current_time(X509_get0_notBefore(cert)) >= 0 || X509_cmp_current_time(X509_get0_notAfter(cert)) <= 0) {
+        return @"签名证书尚未生效、已过期或与私钥不匹配。";
+    }
+    string content;
+    if (!profile || !asset.GetCMSContent2(profile.bytes, (int)profile.length, content)) return @"无法读取当前宿主的描述文件。";
+    NSData *data = [NSData dataWithBytes:content.data() length:content.size()];
+    NSDictionary *info = [NSPropertyListSerialization propertyListWithData:data options:0 format:nil error:nil];
+    if (![info isKindOfClass:NSDictionary.class]) return @"当前宿主的描述文件无效。";
+    NSDate *expiry = info[@"ExpirationDate"];
+    if (![expiry isKindOfClass:NSDate.class] || [expiry timeIntervalSinceNow] <= 0) return @"iOSVM 自身的描述文件已过期，请先续签宿主。";
+    unsigned char *der = nullptr;
+    int length = i2d_X509(cert, &der);
+    NSData *leaf = length > 0 ? [NSData dataWithBytes:der length:length] : nil;
+    OPENSSL_free(der);
+    NSArray *permitted = info[@"DeveloperCertificates"];
+    if (!leaf || ![permitted isKindOfClass:NSArray.class] || ![permitted containsObject:leaf]) return @"此证书与当前 iOSVM 描述文件不匹配，请使用安装 iOSVM 时的签名身份。";
+    return nil;
+}
+
 + (NSString*)getTeamIdWithCert:(NSData *)cert pass:(NSString *)pass {
     string strPassword;
 

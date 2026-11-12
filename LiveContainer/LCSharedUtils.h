@@ -1,10 +1,14 @@
 @import Foundation;
 
 @interface LCSharedUtils : NSObject
++ (NSString * _Nullable)validateTestingConfiguration:(NSData * _Nonnull)data root:(NSString * _Nonnull)root;
 + (NSString*) teamIdentifier;
 + (NSString *)appGroupID;
 + (NSURL*) appGroupPath;
 + (NSString *)certificatePassword;
++ (NSDictionary *)deviceSigningCredentials;
++ (NSString *)storeDeviceSigningCertificate:(NSData *)data password:(NSString *)password;
++ (void)removeDeviceSigningCertificate;
 + (BOOL)launchToGuestAppWithClassicMode:(NSUInteger)classicMode;
 + (BOOL)launchToGuestAppWithURL:(NSURL *)url;
 + (void)setWebPageUrlForNextLaunch:(NSString*)urlString;

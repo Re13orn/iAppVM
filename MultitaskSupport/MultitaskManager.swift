@@ -13,23 +13,13 @@ enum MultitaskMode : Int {
 @objc class MultitaskManager : NSObject {
     static private var usingMultitaskContainers : [String] = []
     
-    @objc class func registerMultitaskContainer(container: String) {
-        usingMultitaskContainers.append(container)
-    }
-    
-    @objc class func unregisterMultitaskContainer(container: String) {
-        usingMultitaskContainers.removeAll(where: { c in
-            return c == container
-        })
-    }
-    
     @objc class func isUsing(container: String) -> Bool {
-        return usingMultitaskContainers.contains { c in
+        return IOSVMProcessRegistry.shared.isContainerBusy(container) || usingMultitaskContainers.contains { c in
             return c == container
         }
     }
     
     @objc class func isMultitasking() -> Bool {
-        return usingMultitaskContainers.count > 0
+        return IOSVMProcessRegistry.shared.hasActiveProcesses() || usingMultitaskContainers.count > 0
     }
 }

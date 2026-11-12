@@ -109,23 +109,47 @@ void LCPatchAddRPath(const char *path, struct mach_header_64 *header) {
     insertRPathCommand("@loader_path", header);
 }
 
-int LCPatchExecSlice(const char *path, struct mach_header_64 *header, bool doInject) {
+int LCPatchExecSlice(const char *path, struct mach_header_64 *header, bool doInject,
+                     NSMutableDictionary *metadata) {
     uint8_t *imageHeaderPtr = (uint8_t*)header + sizeof(struct mach_header_64);
     int ans = 0;
     // Literally convert an executable to a dylib
     if (header->magic == MH_MAGIC_64) {
-        //assert(header->flags & MH_PIE);
+        // Guest code is still mapped at a randomized address after it is
+        // converted to a dylib. Keep MH_PIE so runtime identity checks see the
+        // same position-independent image identity as a normally launched app.
         header->filetype = MH_DYLIB;
-        header->flags |= MH_NO_REEXPORTED_DYLIBS;
-        header->flags &= ~MH_PIE;
+        header->flags |= MH_NO_REEXPORTED_DYLIBS | MH_PIE;
     }
 
-    // Patch __PAGEZERO to map just a single zero page, fixing "out of address space"
-    struct segment_command_64 *seg = (struct segment_command_64 *)imageHeaderPtr;
-    assert(seg->cmd == LC_SEGMENT_64 || seg->cmd == LC_ID_DYLIB);
-    if (seg->cmd == LC_SEGMENT_64 && seg->vmaddr == 0) {
-        seg->vmaddr = 0x100000000 - 0x4000;
-        seg->vmsize = 0x4000;
+    // Patch __PAGEZERO to map just a single zero page, fixing "out of address
+    // space". Already patched binaries have LC_ID_DYLIB inserted first, so the
+    // guard segment must be located by scanning all load commands.
+    struct segment_command_64 *pageZero = NULL;
+    struct load_command *pageZeroCommand = (struct load_command *)imageHeaderPtr;
+    for (uint32_t index = 0; index < header->ncmds; index++) {
+        if (pageZeroCommand->cmd == LC_SEGMENT_64) {
+            struct segment_command_64 *candidate = (struct segment_command_64 *)pageZeroCommand;
+            if (!strncmp(candidate->segname, "__PAGEZERO", sizeof(candidate->segname))) {
+                pageZero = candidate;
+                break;
+            }
+        }
+        pageZeroCommand = (struct load_command *)((uint8_t *)pageZeroCommand + pageZeroCommand->cmdsize);
+    }
+    if (pageZero && pageZero->vmaddr == 0) {
+        metadata[@"LCOriginalPageZeroVMAddr"] = @(pageZero->vmaddr);
+        metadata[@"LCOriginalPageZeroVMSize"] = @(pageZero->vmsize);
+        pageZero->vmaddr = 0x100000000ULL - 0x4000;
+        pageZero->vmsize = 0x4000;
+    } else if (pageZero &&
+               pageZero->vmaddr == (0x100000000ULL - 0x4000) &&
+               pageZero->vmsize == 0x4000 &&
+               !metadata[@"LCOriginalPageZeroVMAddr"]) {
+        // Existing imports may already have been patched by revision 7.
+        // A normal arm64 executable uses a zero-based 4 GiB guard segment.
+        metadata[@"LCOriginalPageZeroVMAddr"] = @0;
+        metadata[@"LCOriginalPageZeroVMSize"] = @0x100000000ULL;
     }
 
     BOOL hasDylibCommand = NO;
@@ -236,8 +260,14 @@ int LCPatchExecSlice(const char *path, struct mach_header_64 *header, bool doInj
 
 NSString *LCParseMachO(const char *path, bool readOnly, LCParseMachOCallback callback) {
     int fd = open(path, readOnly ? O_RDONLY : O_RDWR, (mode_t)readOnly ? 0400 : 0600);
+    if (fd < 0) {
+        return [NSString stringWithFormat:@"Failed to open %s: %s", path, strerror(errno)];
+    }
     struct stat s;
-    fstat(fd, &s);
+    if (fstat(fd, &s) != 0) {
+        close(fd);
+        return [NSString stringWithFormat:@"Failed to stat %s: %s", path, strerror(errno)];
+    }
     void *map = mmap(NULL, s.st_size, readOnly ? PROT_READ : (PROT_READ | PROT_WRITE), readOnly ? MAP_PRIVATE : MAP_SHARED, fd, 0);
     if (map == MAP_FAILED) {
         return [NSString stringWithFormat:@"Failed to map %s: %s", path, strerror(errno)];
@@ -258,6 +288,8 @@ NSString *LCParseMachO(const char *path, bool readOnly, LCParseMachOCallback cal
     } else if (magic == MH_MAGIC_64 || magic == MH_MAGIC) {
         callback(path, (struct mach_header_64 *)map, fd, map);
     } else {
+        munmap(map, s.st_size);
+        close(fd);
         return @"Not a Mach-O file";
     }
 

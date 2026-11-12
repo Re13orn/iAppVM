@@ -18,6 +18,7 @@
 + (instancetype)extensionWithIdentifier:(NSString *)identifier error:(NSError **)error;
 - (void)beginExtensionRequestWithInputItems:(NSArray *)items completion:(void(^)(NSUUID *))callback;
 - (int)pidForRequestIdentifier:(NSUUID *)identifier;
+- (void)cancelExtensionRequestWithIdentifier:(NSUUID *)identifier;
 - (void)_kill:(int)arg1;
 - (void)setRequestCancellationBlock:(void(^)(NSUUID *uuid, NSError *error))callback;
 - (void)setRequestInterruptionBlock:(void(^)(NSUUID *))callback;
@@ -40,4 +41,3 @@ CFTypeRef SecTaskCopyValueForEntitlement(void *task, CFStringRef key, CFErrorRef
 @interface CFPrefsPlistSource2 : NSObject
 -(id)hook_initWithDomain:(CFStringRef)arg1 user:(CFStringRef)arg2 byHost:(bool)arg3 containerPath:(CFStringRef)arg4 containingPreferences:(id)arg5 ;
 @end
-

@@ -3,6 +3,10 @@
 #import "LCSharedUtils.h"
 #import "UIKitPrivate.h"
 #import "utils.h"
+#import "iOSVMRuntime.h"
+#import "IOSVMNetwork.h"
+#import "IOSVMGuestSession.h"
+#import "IOSVMDebugCompatibility.h"
 
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
@@ -10,9 +14,11 @@
 #include <objc/runtime.h>
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <execinfo.h>
 #include <signal.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 #include <stdlib.h>
 #include "../litehook/src/litehook.h"
 #import "Tweaks/Tweaks.h"
@@ -248,12 +254,130 @@ static void *getAppEntryPoint(void *handle) {
     return (void *)header + entryoff;
 }
 
+// The Tweaks folder can be created by desktop tooling (devicectl transfers) or
+// by an older installation, with a POSIX owner that no longer matches this
+// process. Reads still succeed, but creating a file inside fails with EACCES
+// without any sandbox trace, and the guest then dies with "Library not
+// loaded: @loader_path/../../Tweaks/TweakLoader.dylib". The parent
+// (Documents or the app group) stays writable, so the foreign folder is
+// swapped for a copy owned by this process; the original is kept as a
+// hidden backup.
+static BOOL copyTweakEntry(NSString *source, NSString *destination) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSDictionary *attrs = [fm attributesOfItemAtPath:source error:nil];
+    NSString *type = attrs[NSFileType];
+    if (!type) {
+        return NO;
+    }
+    // Host-managed links (a stale TweakLoader.dylib pointing into an older
+    // bundle) are recreated by the caller after the swap, not copied.
+    if ([type isEqualToString:NSFileTypeSymbolicLink]) {
+        return YES;
+    }
+    if ([type isEqualToString:NSFileTypeDirectory]) {
+        if (![fm createDirectoryAtPath:destination withIntermediateDirectories:YES attributes:nil error:nil]) {
+            return NO;
+        }
+        for (NSString *child in [fm contentsOfDirectoryAtPath:source error:nil]) {
+            if (!copyTweakEntry([source stringByAppendingPathComponent:child],
+                                [destination stringByAppendingPathComponent:child])) {
+                return NO;
+            }
+        }
+        return YES;
+    }
+    if ([type isEqualToString:NSFileTypeRegular]) {
+        return [fm copyItemAtPath:source toPath:destination error:nil];
+    }
+    return NO;
+}
+
+static BOOL publishOwnedTweakFolder(NSString *tweakFolder) {
+    NSFileManager *fm = NSFileManager.defaultManager;
+    NSString *parent = tweakFolder.stringByDeletingLastPathComponent;
+    NSString *nonce = NSUUID.UUID.UUIDString;
+    NSString *stage = [parent stringByAppendingPathComponent:[@".tweaks-repair-" stringByAppendingString:nonce]];
+    NSString *backup = [parent stringByAppendingPathComponent:[@".tweaks-backup-" stringByAppendingString:nonce]];
+    if (![fm createDirectoryAtPath:stage withIntermediateDirectories:NO attributes:nil error:nil]) {
+        NSLog(@"[LCBootstrap] tweak repair stage create failed");
+        return NO;
+    }
+    for (NSString *item in [fm contentsOfDirectoryAtPath:tweakFolder error:nil]) {
+        if (!copyTweakEntry([tweakFolder stringByAppendingPathComponent:item],
+                            [stage stringByAppendingPathComponent:item])) {
+            NSLog(@"[LCBootstrap] tweak repair copy failed for %@", item);
+            [fm removeItemAtPath:stage error:nil];
+            return NO;
+        }
+    }
+    errno = 0;
+    if (rename(tweakFolder.UTF8String, backup.UTF8String) != 0) {
+        int renameErrno = errno;
+        NSLog(@"[LCBootstrap] tweak repair rename failed errno=%d", renameErrno);
+        [fm removeItemAtPath:stage error:nil];
+        return NO;
+    }
+    errno = 0;
+    if (rename(stage.UTF8String, tweakFolder.UTF8String) != 0) {
+        int renameErrno = errno;
+        NSLog(@"[LCBootstrap] tweak repair publish failed errno=%d", renameErrno);
+        rename(backup.UTF8String, tweakFolder.UTF8String);
+        return NO;
+    }
+    NSLog(@"[LCBootstrap] repaired tweak folder ownership for %@ (backup %@)",
+          tweakFolder.lastPathComponent, backup.lastPathComponent);
+    return YES;
+}
+
 static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContainer, int argc, char *argv[]) {
     NSString *appError = nil;
+    // Test builds clear a stale "wait for debugger" toggle: leaving it on makes
+    // every guest launch sleep past the 20s process-launch watchdog (0x8BADF00D)
+    // on device, which looks like a black screen instead of a debug pause.
+    if ([[lcUserDefaults objectForKey:@"LCWaitForDebugger"] boolValue]
+        && [NSBundle.mainBundle.infoDictionary[@"IOSVMTestWindowsEnabled"] boolValue]) {
+        [lcUserDefaults setBool:NO forKey:@"LCWaitForDebugger"];
+    }
     if([[lcUserDefaults objectForKey:@"LCWaitForDebugger"] boolValue]) {
         sleep(100);
     }
-    if (!LCSharedUtils.certificatePassword && !isSideStore) {
+    // A Mac can sign a private guest with the host's certificate, keeping its
+    // private key off the phone. This explicit mode still requires the kernel's
+    // library-validation check; it does not enable unsigned code or JIT.
+    NSString *codeCacheRoot = nil;
+    if (isLiveProcess && getenv("LC_CODE_CACHE_ROOT") && getenv("LP_HOME_PATH")) {
+        NSString *candidate = [NSString stringWithUTF8String:getenv("LC_CODE_CACHE_ROOT")].stringByStandardizingPath.stringByResolvingSymlinksInPath;
+        NSString *permitted = [[NSString stringWithUTF8String:getenv("LP_HOME_PATH")] stringByAppendingPathComponent:@"Documents/iOSVMCodeCache"].stringByStandardizingPath.stringByResolvingSymlinksInPath;
+        if (![candidate hasPrefix:[permitted stringByAppendingString:@"/"]]) return @"测试窗口的代码缓存路径无效。";
+        codeCacheRoot = candidate;
+    }
+    NSString *privateBundlePath = [[NSString stringWithFormat:@"%s/Documents/Applications", getenv("LC_HOME_PATH")] stringByAppendingPathComponent:selectedApp];
+    if (codeCacheRoot) privateBundlePath = [[codeCacheRoot stringByAppendingPathComponent:@"Applications"] stringByAppendingPathComponent:selectedApp];
+    BOOL externallySigned = NO;
+    if (!isSideStore) {
+        NSString *guestPath = privateBundlePath;
+        NSDictionary *externalInfo = [NSDictionary dictionaryWithContentsOfFile:[guestPath stringByAppendingPathComponent:@"LCAppInfo.plist"]];
+        NSString *requestPath = [[NSString stringWithFormat:@"%s/Documents/iOSVM/SigningRequests", getenv("LC_HOME_PATH")]
+            stringByAppendingPathComponent:[selectedApp stringByAppendingString:@".json"]];
+        NSData *requestData = [NSData dataWithContentsOfFile:requestPath options:NSDataReadingMappedIfSafe error:nil];
+        if (requestData.length > 262144) requestData = nil;
+        NSDictionary *request = requestData ? [NSJSONSerialization JSONObjectWithData:requestData options:0 error:nil] : nil;
+        NSString *signingGeneration = [externalInfo[@"IOSVMSigningGeneration"] isKindOfClass:NSString.class] ? externalInfo[@"IOSVMSigningGeneration"] : nil;
+        BOOL requestReady = [request[@"state"] isEqual:@"ready"] &&
+            (!signingGeneration || [request[@"id"] isEqual:signingGeneration]);
+        if ([externalInfo[@"IOSVMNeedsExternalSigning"] boolValue] || (request[@"state"] && !requestReady)) {
+            return @"此 App 尚未完成签名。请返回管理页，在 Frida 调试中完成手机签名，或使用电脑签名。";
+        }
+        if ([externalInfo[@"IOSVMExternallySigned"] boolValue] || [externalInfo[@"IOSVMDeviceSigned"] boolValue]) {
+            NSDictionary *bundleInfo = [NSDictionary dictionaryWithContentsOfFile:[guestPath stringByAppendingPathComponent:@"Info.plist"]];
+            NSString *executable = bundleInfo[@"CFBundleExecutable"];
+            if (!executable || !checkCodeSignature([guestPath stringByAppendingPathComponent:executable].fileSystemRepresentation)) {
+                return @"The externally signed guest did not pass iOS library validation. Sign it on the Mac using the host's certificate and transfer it again.";
+            }
+            externallySigned = YES;
+        }
+    }
+    if (!LCSharedUtils.certificatePassword && !isSideStore && !externallySigned) {
 #if !TARGET_OS_SIMULATOR
         if(@available(iOS 26.0 ,*))  {
             return @"JITLess mode is required since iOS 26. Please set it up in settings. \nPlease go to LiveContainer settings -> tap \"Import Certificate from SideStore\" / \"Import Certificate\"";
@@ -276,7 +400,7 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     
     NSString *bundlePath = 0;
     if(!isSideStore) {
-        bundlePath = [NSString stringWithFormat:@"%@/Applications/%@", docPath, selectedApp];
+        bundlePath = privateBundlePath;
     } else if (isLiveProcess) {
         bundlePath = [[NSBundle.mainBundle.bundleURL.URLByDeletingLastPathComponent.URLByDeletingLastPathComponent URLByAppendingPathComponent:@"Frameworks/SideStoreApp.framework"] path];
     } else {
@@ -347,21 +471,63 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     if (isSharedBundle) {
         tweakFolder = [appGroupFolder.path  stringByAppendingPathComponent:@"Tweaks"];
     } else {
-        tweakFolder = [docPath stringByAppendingPathComponent:@"Tweaks"];
+        tweakFolder = [(codeCacheRoot ?: docPath) stringByAppendingPathComponent:@"Tweaks"];
     }
     setenv("LC_GLOBAL_TWEAKS_FOLDER", tweakFolder.UTF8String, 1);
 
     // Update TweakLoader symlink
     NSString *tweakLoaderPath = [tweakFolder stringByAppendingPathComponent:@"TweakLoader.dylib"];
-    if (![fm fileExistsAtPath:tweakLoaderPath]) {
-        remove(tweakLoaderPath.UTF8String);
+    NSString *tweakLoaderTarget = nil;
+    {
         NSString *bundlePath = NSBundle.mainBundle.bundlePath;
         if([bundlePath hasSuffix:@"PlugIns/LiveProcess.appex"]) {
             // traverse back to LiveContainer.app
             bundlePath = bundlePath.stringByDeletingLastPathComponent.stringByDeletingLastPathComponent;
         }
-        NSString *target = [bundlePath stringByAppendingPathComponent:@"Frameworks/TweakLoader.dylib"];
-        symlink(target.UTF8String, tweakLoaderPath.UTF8String);
+        tweakLoaderTarget = [bundlePath stringByAppendingPathComponent:@"Frameworks/TweakLoader.dylib"];
+    }
+    {
+        struct stat folderStat = {0};
+        BOOL haveFolderStat = lstat(tweakFolder.UTF8String, &folderStat) == 0;
+        BOOL loaderExists = [fm fileExistsAtPath:tweakLoaderPath];
+        NSLog(@"[LCBootstrap] tweak folder %@ uid=%d mode=%o loaderExists=%d home=%s",
+              tweakFolder, haveFolderStat ? folderStat.st_uid : -1,
+              haveFolderStat ? folderStat.st_mode : 0, loaderExists, getenv("LC_HOME_PATH"));
+    }
+    if (![fm fileExistsAtPath:tweakLoaderPath]) {
+        remove(tweakLoaderPath.UTF8String);
+        errno = 0;
+        symlink(tweakLoaderTarget.UTF8String, tweakLoaderPath.UTF8String);
+        int symlinkErrno = errno;
+        if (![fm fileExistsAtPath:tweakLoaderPath]) {
+            struct stat tweakStat = {0};
+            BOOL haveStat = lstat(tweakFolder.UTF8String, &tweakStat) == 0;
+            NSDictionary *itemAttrs = [fm attributesOfItemAtPath:tweakLoaderPath error:nil];
+            NSLog(@"[LCBootstrap] TweakLoader symlink failed errno=%d for %@ (folder uid=%d euid=%d mode=%o exists=%d)",
+                  symlinkErrno, tweakFolder, haveStat ? tweakStat.st_uid : -1, getuid(),
+                  haveStat ? tweakStat.st_mode : 0, itemAttrs != nil);
+            if (symlinkErrno == ENOENT) {
+                [fm createDirectoryAtPath:tweakFolder withIntermediateDirectories:YES attributes:nil error:nil];
+            } else if (symlinkErrno == EACCES || symlinkErrno == EPERM || symlinkErrno == EROFS || symlinkErrno == EEXIST) {
+                // Case 1: we own the folder but its mode denies write (desktop
+                // transfers often publish trees without owner-write bits).
+                // Case 2: the folder (or a stale link inside it) is owned by a
+                // different uid; swap it for a copy owned by this process so
+                // the retry below can create the link.
+                if (haveStat && tweakStat.st_uid == getuid() && chmod(tweakFolder.UTF8String, 0755) == 0) {
+                    NSLog(@"[LCBootstrap] restored owner-write on tweak folder");
+                } else {
+                    publishOwnedTweakFolder(tweakFolder);
+                }
+            }
+            remove(tweakLoaderPath.UTF8String);
+            errno = 0;
+            symlink(tweakLoaderTarget.UTF8String, tweakLoaderPath.UTF8String);
+            int retryErrno = errno;
+            if (![fm fileExistsAtPath:tweakLoaderPath]) {
+                NSLog(@"[LCBootstrap] TweakLoader symlink still missing after repair errno=%d", retryErrno);
+            }
+        }
     }
 
     // If JIT is enabled, bypass library validation so we can load arbitrary binaries
@@ -483,6 +649,29 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     
     NSString* containerInfoPath = [newHomePath stringByAppendingPathComponent:@"LCContainerInfo.plist"];
     guestContainerInfo = [NSDictionary dictionaryWithContentsOfFile:containerInfoPath];
+
+    NSString *selectedPlugins = [guestAppInfo[@"LCTweakFolder"] isKindOfClass:NSString.class] ? guestAppInfo[@"LCTweakFolder"] : nil;
+    NSString *fridaFolder = selectedPlugins.length ? [tweakFolder stringByAppendingPathComponent:selectedPlugins] : nil;
+    NSData *fridaData = fridaFolder ? [NSData dataWithContentsOfFile:[fridaFolder stringByAppendingPathComponent:@"iOSVMFrida.json"]] : nil;
+    NSDictionary *frida = fridaData.length <= 65536 ? [NSJSONSerialization JSONObjectWithData:fridaData ?: [NSData data] options:0 error:nil] : nil;
+    if ([frida isKindOfClass:NSDictionary.class] && [frida[@"version"] isEqual:@1]) {
+        [IOSVMRuntime configureDebug:@{@"automatic":@([frida[@"automatic"] boolValue]),
+            @"revision":[frida[@"revision"] isKindOfClass:NSString.class] ? frida[@"revision"] : @"",
+            @"scriptCount":@([frida[@"automatic"] boolValue] && [frida[@"scripts"] isKindOfClass:NSArray.class] ? [frida[@"scripts"] count] : 0),
+            @"scriptSource":[frida[@"automatic"] boolValue] ? @"phone-auto" : @"computer-listen",
+            @"scriptIDs":[frida[@"scripts"] isKindOfClass:NSArray.class] ? frida[@"scripts"] : @[],
+            @"scriptNames":[frida[@"phoneScriptNames"] isKindOfClass:NSDictionary.class] ? frida[@"phoneScriptNames"] : @{},
+            @"phoneConfiguredScriptCount":@([frida[@"scripts"] isKindOfClass:NSArray.class] ? [frida[@"scripts"] count] : 0),
+            @"computerConfiguredScriptCount":@([frida[@"computerScripts"] isKindOfClass:NSArray.class] ? [frida[@"computerScripts"] count] : 0),
+            @"gadgetVersion":[frida[@"gadgetVersion"] isKindOfClass:NSString.class] ? frida[@"gadgetVersion"] : @"unknown",
+            @"captureConsole":@([frida[@"captureConsole"] boolValue])}];
+    }
+
+    NSArray<NSString *> *testingArguments = nil;
+    NSError *testingError = nil;
+    if (![IOSVMRuntime prepareAtRoot:newHomePath executable:appBundle.executablePath ?: @"" arguments:&testingArguments error:&testingError]) {
+        return testingError.localizedDescription ?: @"Testing runtime configuration failed.";
+    }
     
     [LCSharedUtils setContainerUsingByLC:lcAppUrlScheme folderName:dataUUID auditToken:0];
 
@@ -497,7 +686,7 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
         return @"App's executable path not found. Please try force re-signing or reinstalling this app.";
     }
 
-    NSMutableArray<NSString *> *objcArgv = NSProcessInfo.processInfo.arguments.mutableCopy;
+    NSMutableArray<NSString *> *objcArgv = (testingArguments ?: NSProcessInfo.processInfo.arguments).mutableCopy;
     objcArgv[0] = appBundle.executablePath;
     [NSProcessInfo.processInfo performSelector:@selector(setArguments:) withObject:objcArgv];
     NSProcessInfo.processInfo.processName = appBundle.infoDictionary[@"CFBundleExecutable"];
@@ -511,6 +700,11 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     
     // hook NSUserDefault before running libraries' initializers
     NUDGuestHooksInit();
+    NSDictionary *compatibility = IOSVMApplyDebugCompatibility(
+        [guestAppInfo[@"IOSVMSuppressKnownDebugAlerts"] boolValue], lcGuestAppId,
+        appBundle.infoDictionary, appBundle.executablePath, NSUserDefaults.standardUserDefaults);
+    [IOSVMRuntime stage:@"debugCompatibility" details:@{@"debugCompatibility": compatibility}];
+    NSLog(@"[iAppVM] Debug compatibility: %@", compatibility);
     if(!isSideStore) {
         SecItemGuestHooksInit();
         NSFMGuestHooksInit();
@@ -519,10 +713,15 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     if(isLiveProcess) {
         NSURLSCGuestHooksInit();
     }
+    NSString *networkSettings = [IOSVMGuestAccess networkSettingsForBundle:selectedApp documents:[NSURL fileURLWithPath:docPath]].path;
+    NSError *networkError = nil;
+    if (![IOSVMNetwork startWithSettings:networkSettings root:newHomePath error:&networkError]) {
+        return networkError.localizedDescription ?: @"Network configuration failed.";
+    }
     // ignore setting handler from guest app
     litehook_rebind_symbol(LITEHOOK_REBIND_GLOBAL, NSSetUncaughtExceptionHandler, hook_do_nothing, nil);
     
-    BOOL hookDlopen = !isSideStore && !isSharedBundle && LCSharedUtils.certificatePassword && isLiveProcess;
+    BOOL hookDlopen = !codeCacheRoot && !isSideStore && !isSharedBundle && LCSharedUtils.certificatePassword && isLiveProcess;
     DyldHooksInit([guestAppInfo[@"hideLiveContainer"] boolValue], hookDlopen, [guestAppInfo[@"spoofSDKVersion"] unsignedIntValue]);
     
     if([guestContainerInfo[@"spoofIdentifierForVendor"] boolValue]) {
@@ -568,6 +767,7 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     }
     
     // Preload executable to bypass RT_NOLOAD
+    [IOSVMRuntime stage:@"loadingExecutable" details:nil];
     appMainImageIndex = _dyld_image_count();
     __block void *appHandle = 0;
     void (^dlopenBlock)(void) = ^{
@@ -623,7 +823,10 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
 
     // Attempt to load the bundle. 32-bit bundle will always fail because of 32-bit main executable, so ignore it
     if (!is32bit && ![appBundle loadAndReturnError:&error]) {
-        appError = error.localizedDescription;
+        // loadAndReturnError: can fail without populating the error object;
+        // returning nil here would be misread as success and we would jump
+        // through a garbage entry point.
+        appError = error.localizedDescription ?: @"Failed to load Guest bundle (unknown error)";
         NSLog(@"[LCBootstrap] loading bundle failed: %@", error);
         *path = oldPath;
         return appError;
@@ -640,9 +843,19 @@ static NSString* invokeAppMain(NSString *selectedApp, NSString *selectedContaine
     }
 
     // Go!
+    [IOSVMRuntime stage:@"mainEntered" details:nil];
     NSLog(@"[LCBootstrap] jumping to main %p", appMain);
     int ret;
     if(!is32bit) {
+        if (testingArguments) {
+            argc = (int)testingArguments.count;
+            argv = calloc(argc + 1, sizeof(char *));
+            if (!argv) return @"Unable to allocate Guest arguments.";
+            for (int i = 0; i < argc; i++) {
+                argv[i] = i == 0 ? (char *)appExecPath : strdup(testingArguments[i].UTF8String);
+                if (!argv[i]) return @"Unable to allocate Guest argument.";
+            }
+        }
         argv[0] = (char *)appExecPath;
         ret = appMain(argc, argv, environ);
     } else {
@@ -729,6 +942,12 @@ int LiveContainerMain(int argc, char *argv[]) {
     [NSFileManager.defaultManager createDirectoryAtPath:@(getenv("TMPDIR")) withIntermediateDirectories:YES attributes:nil error:nil];
     
     if([selectedApp isEqualToString:@"ui"]) {
+        // The Mac launcher uses -selected ui to reach management. Argument-domain values
+        // otherwise override later UI selections even after removeObjectForKey:.
+        NSMutableDictionary *arguments = [[lcUserDefaults volatileDomainForName:NSArgumentDomain] mutableCopy];
+        [arguments removeObjectForKey:@"selected"];
+        [arguments removeObjectForKey:@"selectedContainer"];
+        if (arguments) [lcUserDefaults setVolatileDomain:arguments forName:NSArgumentDomain];
         selectedApp = nil;
         [lcUserDefaults removeObjectForKey:@"selected"];
         [lcUserDefaults removeObjectForKey:@"selectedContainer"];
@@ -807,6 +1026,8 @@ int LiveContainerMain(int argc, char *argv[]) {
         }
         NSString *appError = invokeAppMain(selectedApp, selectedContainer, argc, argv);
         if (appError) {
+            [IOSVMRuntime stage:@"launchFailed" details:@{@"error": appError}];
+            NSLog(@"[iOSVM] Guest launch failed: %@", appError);
             if(isLiveProcess) {
                 dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(100 * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
                     NSExtensionContext *context = [NSClassFromString(@"LiveProcessHandler") extensionContext];
@@ -817,6 +1038,7 @@ int LiveContainerMain(int argc, char *argv[]) {
                 CFRunLoopRun();
             } else {
                 [lcUserDefaults setObject:appError forKey:@"error"];
+                [lcUserDefaults synchronize];
                 // potentially unrecovable state, exit now
                 return 1;
             }

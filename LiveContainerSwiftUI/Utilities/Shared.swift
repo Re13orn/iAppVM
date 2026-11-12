@@ -65,15 +65,16 @@ class SharedModel: ObservableObject {
     
     @Published var enableMultipleWindow = false
 
+    /// Bumped on in-app language change so the whole view tree rebuilds and re-resolves .loc strings.
+    @Published var appLanguageGeneration = 0
+
     @Published var appDataFolderNames: [String] = []
     @Published var tweakFolderNames: [String] = []
     
     @Published var apps : [LCAppModel] = []
     @Published var arm32EmuApps : [LCAppModel] = []
     @Published var hiddenApps : [LCAppModel] = []
-    
-    @Published var pidCallback : ((NSNumber, Error?) -> Void)? = nil
-    
+
     static let isPhone: Bool = {
         UIDevice.current.userInterfaceIdiom == .phone
     }()
@@ -165,8 +166,14 @@ extension String: @retroactive LocalizedError {
         let bundle = Bundle(path: path!)
         return bundle
     }()
-    
+
     var loc: String {
+        if let overrideBundle = LCLanguage.bundle {
+            let overridden = overrideBundle.localizedString(forKey: self, value: nil, table: nil)
+            if overridden != self {
+                return overridden
+            }
+        }
         let message = NSLocalizedString(self, comment: "")
         if message != self {
             return message

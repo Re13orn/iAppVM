@@ -2,6 +2,9 @@
 #import "FoundationPrivate.h"
 #import "UIKitPrivate.h"
 #import "utils.h"
+#import "iOSVMRuntime.h"
+#import <signal.h>
+#import <unistd.h>
 @import MachO;
 
 extern NSUserDefaults *lcUserDefaults;
@@ -12,6 +15,11 @@ NSString* FBSOpenApplicationOptionKeyActivateAsClassic = @"__ActivateAsClassic";
 NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
 
 @implementation LCSharedUtils
+
++ (NSString *)validateTestingConfiguration:(NSData *)data root:(NSString *)root {
+    NSError *error = nil;
+    return [IOSVMRuntime validateConfiguration:data root:root error:&error] ? nil : error.localizedDescription;
+}
 
 + (NSString*) teamIdentifier {
     static NSString* ans = nil;
@@ -118,9 +126,43 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
     return appGroupPath;
 }
 
++ (NSMutableDictionary *)deviceSigningKeychainQuery {
+    return [@{(__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+              (__bridge id)kSecAttrService: [NSBundle.mainBundle.bundleIdentifier stringByAppendingString:@".iOSVMSigning"],
+              (__bridge id)kSecAttrAccount: @"signing-identity"} mutableCopy];
+}
+
++ (NSDictionary *)deviceSigningCredentials {
+    NSMutableDictionary *query = [self deviceSigningKeychainQuery];
+    query[(__bridge id)kSecReturnData] = @YES;
+    CFTypeRef result = NULL;
+    if (SecItemCopyMatching((__bridge CFDictionaryRef)query, &result) != errSecSuccess) return nil;
+    NSData *data = CFBridgingRelease(result);
+    id credentials = [NSPropertyListSerialization propertyListWithData:data options:0 format:nil error:nil];
+    return [credentials isKindOfClass:NSDictionary.class] ? credentials : nil;
+}
+
++ (NSString *)storeDeviceSigningCertificate:(NSData *)data password:(NSString *)password {
+    NSData *payload = [NSPropertyListSerialization dataWithPropertyList:@{@"data":data, @"password":password} format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+    if (!payload) return @"无法保存签名身份。";
+    NSMutableDictionary *query = [self deviceSigningKeychainQuery];
+    NSDictionary *attributes = @{(__bridge id)kSecValueData:payload,
+        (__bridge id)kSecAttrAccessible:(__bridge id)kSecAttrAccessibleWhenUnlockedThisDeviceOnly};
+    OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)attributes);
+    if (status == errSecItemNotFound) {
+        [query addEntriesFromDictionary:attributes];
+        status = SecItemAdd((__bridge CFDictionaryRef)query, NULL);
+    }
+    return status == errSecSuccess ? nil : @"无法写入签名钥匙串，请解锁手机后重试。";
+}
+
++ (void)removeDeviceSigningCertificate {
+    SecItemDelete((__bridge CFDictionaryRef)[self deviceSigningKeychainQuery]);
+}
+
 + (NSString *)certificatePassword {
     NSUserDefaults* nud = NSUserDefaults.lcSharedDefaults ?: NSUserDefaults.standardUserDefaults;
-    return [nud objectForKey:@"LCCertificatePassword"];
+    return [self deviceSigningCredentials][@"password"] ?: [nud objectForKey:@"LCCertificatePassword"] ?: [NSUserDefaults.standardUserDefaults objectForKey:@"LCCertificatePassword"];
 }
 
 + (BOOL)launchToGuestAppWithClassicMode:(NSUInteger)classicMode {
@@ -149,6 +191,19 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
         }
     }
 
+    // Opening the app that is *currently running in this process* is a no-op for
+    // FrontBoard (the scene is already active): by the time the completion handler
+    // below fires, FrontBoard has already resolved the request against the live
+    // scene, so the legacy "kill self in completion handler" flow leaves a dead
+    // scene on screen (black screen on iOS 18). Instead, submit the open request
+    // and terminate immediately: the request travels asynchronously via lsd to
+    // FrontBoard (measured ~100-200 ms), while the kernel reports our death to
+    // SpringBoard within a few milliseconds, so FrontBoard resolves the request
+    // against a dead process and must spawn a fresh one — a real cold launch in
+    // which LiveContainerMain re-runs and hands control to the selected guest.
+    // If we lose this race anyway, the outcome is exactly the status quo
+    // (no-op open, dead scene), never worse.
+
     int tries = 2;
     _LSOpenConfiguration *configuration = [[PrivClass(_LSOpenConfiguration) alloc] init];
     if(classicMode) {
@@ -157,16 +212,16 @@ NSString* FBSOpenApplicationOptionKeyPayloadURL = @"__PayloadURL";
         configuration.frontBoardOptions = dict;
     }
     LSApplicationWorkspace* workspace = [PrivClass(LSApplicationWorkspace) defaultWorkspace];
-    
     for (int i = 0; i < tries; i++) {
         [workspace openApplicationWithBundleIdentifier:NSUserDefaults.lcMainBundle.bundleIdentifier
                                          configuration:configuration
                                      completionHandler:^(BOOL success, NSError* error) {
             NSLog(@"success=%d error=%@", success, error);
-            completionHandler(success);
         }];
     }
-    return YES;
+    // The request has been handed off; die now so FrontBoard sees a dead app.
+    raise(SIGKILL);
+    return YES; // unreachable
 }
 
 + (BOOL)launchToGuestAppWithURL:(NSURL *)url {

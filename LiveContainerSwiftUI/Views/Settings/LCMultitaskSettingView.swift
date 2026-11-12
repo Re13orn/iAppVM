@@ -9,7 +9,7 @@ import SwiftUI
 
 struct LCMultitaskSettingView: View {
     @AppStorage("LCMultitaskMode", store: LCUtils.appGroupUserDefault) var multitaskMode: MultitaskMode = .virtualWindow
-    @AppStorage("LCLaunchInMultitaskMode") var launchInMultitaskMode = false
+    @AppStorage("LCLaunchInMultitaskMode") var launchInMultitaskMode = Bundle.main.object(forInfoDictionaryKey: "IOSVMTestWindowsEnabled") as? Bool ?? false
     @AppStorage("LCLaunchMultitaskMaximized") var launchMultitaskMaximized = false
     @AppStorage("LCMultitaskBottomWindowBar", store: LCUtils.appGroupUserDefault) var bottomWindowBar = false
     @AppStorage("LCAutoEndPiP", store: LCUtils.appGroupUserDefault) var autoEndPiP = false
@@ -32,7 +32,13 @@ struct LCMultitaskSettingView: View {
                     }
                 }
                 Toggle(isOn: $launchInMultitaskMode) {
-                    Text("lc.settings.autoLaunchInMultitaskMode".loc)
+                    Text("lc.multitask.defaultSeparateWindow".loc)
+                }
+                Text("lc.multitask.defaultSeparateWindowDesc".loc)
+                    .font(.footnote).foregroundStyle(.secondary)
+                if LCUtils.liveProcessBundleIdentifier() == nil {
+                    Label("lc.multitask.missingLiveProcess".loc, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 }
                 
                 if multitaskMode == .virtualWindow {

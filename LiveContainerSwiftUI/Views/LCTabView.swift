@@ -49,6 +49,10 @@ struct LCTabView: View {
                 }
                 .tag(LCTabIdentifier.settings)
         }
+        #if IOSVM_TESTING
+        .preferredColorScheme(UserDefaults.standard.string(forKey: "iosvmTestAppearance") == "light" ? .light : (UserDefaults.standard.string(forKey: "iosvmTestAppearance") == "dark" ? .dark : nil))
+        .dynamicTypeSize(UserDefaults.standard.bool(forKey: "iosvmTestLargeText") ? .accessibility1 : .large)
+        #endif
         .downloadAlert(helper: downloadHelper)
         .environmentObject(downloadHelper)
         .alert("lc.common.error".loc, isPresented: $errorShow){
@@ -95,12 +99,26 @@ struct LCTabView: View {
             }
         }
         .task {
+            // Only explicit managed debugging launches suppress foreground idle sleep.
+            if UserDefaults.standard.bool(forKey: "iosvmKeepAwake") {
+                UIApplication.shared.isIdleTimerDisabled = true
+            }
+            do { try await IOSVMDeviceSigning.consumeProvisioning() }
+            catch { errorInfo = error.localizedDescription; errorShow = true }
             closeDuplicatedWindow()
             checkLastLaunchError()
             checkTeamId()
             checkAndSaveBundleId()
             checkGetTaskAllow()
             checkPrivateContainerBookmark()
+            applyTestWindowDefaults()
+        }
+        .onChange(of: scenePhase) { phase in
+            guard phase == .active else { return }
+            Task { @MainActor in
+                do { try await IOSVMDeviceSigning.consumeProvisioning() }
+                catch { errorInfo = error.localizedDescription; errorShow = true }
+            }
         }
         .onReceive(pub) { out in
             if let scene1 = sceneDelegate.window?.windowScene, let scene2 = out.object as? UIWindowScene, scene1 == scene2 {
@@ -114,6 +132,15 @@ struct LCTabView: View {
         }
     }
     
+    func applyTestWindowDefaults() {
+        guard Bundle.main.object(forInfoDictionaryKey: "IOSVMTestWindowsEnabled") as? Bool == true,
+              !UserDefaults.standard.bool(forKey: "IOSVMTestWindowDefaultsApplied") else { return }
+        UserDefaults.standard.set(true, forKey: "LCLaunchInMultitaskMode")
+        UserDefaults.standard.set(false, forKey: "LCLaunchMultitaskMaximized")
+        LCUtils.appGroupUserDefault.set(0, forKey: "LCMultitaskMode")
+        UserDefaults.standard.set(true, forKey: "IOSVMTestWindowDefaultsApplied")
+    }
+
     func dispatchURL(url: URL) {
         repeat {
             if url.isFileURL {
@@ -128,6 +155,14 @@ struct LCTabView: View {
             guard let host = url.host?.lowercased() else {
                 return
             }
+            #if IOSVM_TESTING
+            if host == "iosvm-testing-stop",
+               let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first(where: { $0.name == "id" })?.value,
+               UUID(uuidString: id) != nil {
+                NotificationCenter.default.post(name: Notification.Name("IOSVMStopGuest"), object: nil, userInfo: ["id": id])
+                return
+            }
+            #endif
             
             switch host {
             case "livecontainer-launch", "install", "open-web-page", "open-url":

@@ -1,0 +1,29 @@
+[package]
+name = "iappvm-installer-engine"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+
+[dependencies]
+isideload = "=0.5.2"
+idevice = { version = "=0.1.68", default-features = false, features = ["ring", "usbmuxd", "house_arrest", "afc", "installation_proxy"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "process"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+plist = "1"
+rootcause = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+uuid = { version = "1", features = ["v4"] }
+zeroize = "1"
+tempfile = "3"
+apple-codesign-quick = "=0.1.0"
+reqwest = { version = "0.13", default-features = false }
+
+p12-keystore = { package = "isideload-p12-keystore", version = "=0.3.0-rc4" }
+rsa = "0.9"
+x509-cert = "0.2.5"
+
+base64 = "0.22"
+
+[patch.crates-io]
+apple-codesign-quick = { path = "Vendor/apple-codesign-quick" }

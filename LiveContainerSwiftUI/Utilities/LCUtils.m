@@ -28,7 +28,7 @@
     if(!nud) {
         nud = NSUserDefaults.standardUserDefaults;
     }
-    return [nud objectForKey:@"LCCertificateData"];
+    return [LCSharedUtils deviceSigningCredentials][@"data"] ?: [nud objectForKey:@"LCCertificateData"] ?: [NSUserDefaults.standardUserDefaults objectForKey:@"LCCertificateData"];
 }
 
 
@@ -68,11 +68,15 @@
     
     [lcUserDefaults removeObjectForKey:@"selected"];
     [lcUserDefaults removeObjectForKey:@"selectedContainer"];
+    void (^windowReady)(NSNumber *, NSError *) = ^(NSNumber *pid, NSError *error) {
+        [IOSVMWindowLaunchReporter recordPID:pid error:error bundle:bundleId container:dataUUID];
+        if (completionHandler) completionHandler(pid, error);
+    };
     
     dispatch_async(dispatch_get_main_queue(), ^{
         if (@available(iOS 16.1, *)) {
             if(UIApplication.sharedApplication.supportsMultipleScenes && [NSUserDefaults.lcSharedDefaults integerForKey:@"LCMultitaskMode"] == 1) {
-                [MultitaskWindowManager openAppWindowWithDisplayName:displayName dataUUID:dataUUID bundleId:bundleId pidCallback:completionHandler];
+                [MultitaskWindowManager openAppWindowWithDisplayName:displayName dataUUID:dataUUID bundleId:bundleId pidCallback:windowReady];
                 MultitaskDockManager *dock = [MultitaskDockManager shared];
                 [dock addRunningApp:displayName appUUID:dataUUID view:nil];
                 return;
@@ -82,7 +86,7 @@
         UIViewController *rootVC = ((UIWindowScene *)UIApplication.sharedApplication.connectedScenes.anyObject).keyWindow.rootViewController;
         DecoratedAppSceneViewController *launcherView = [[DecoratedAppSceneViewController alloc] initWindowName:displayName bundleId:bundleId dataUUID:dataUUID rootVC:rootVC];
         // Wire PID callback
-        launcherView.pidAvailableHandler = completionHandler;
+        launcherView.pidAvailableHandler = windowReady;
         launcherView.view.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleLeftMargin | UIViewAutoresizingFlexibleRightMargin | UIViewAutoresizingFlexibleBottomMargin;
         launcherView.view.center = rootVC.view.center;
     });
@@ -139,9 +143,18 @@
         return nil;
     }
 
+    Class signerClass = NSClassFromString(@"ZSigner");
+    if (!signerClass) {
+        // Without this bail-out the completion handler would never fire and
+        // "SigningInProgress" would stay YES forever, blocking all launches.
+        completionHandler(NO, [NSError errorWithDomain:NSBundle.mainBundle.bundleIdentifier code:1
+            userInfo:@{NSLocalizedDescriptionKey: @"签名组件 ZSigner 未加载，请重装应用后重试。"}]);
+        return nil;
+    }
+
     NSLog(@"[LC] starting signing...");
     
-    NSProgress* ans = [NSClassFromString(@"ZSigner") signWithAppPath:[path path] bundleId:NSBundle.mainBundle.bundleIdentifier cert:self.certificateData pass:LCSharedUtils.certificatePassword completionHandler:completionHandler];
+    NSProgress* ans = [signerClass signWithAppPath:[path path] bundleId:NSBundle.mainBundle.bundleIdentifier cert:self.certificateData pass:LCSharedUtils.certificatePassword completionHandler:completionHandler];
     
     return ans;
 }
@@ -153,13 +166,27 @@
         completionHandler(NO, error);
         return nil;
     }
+    Class signerClass = NSClassFromString(@"ZSigner");
+    if (!signerClass) {
+        completionHandler(NO, [NSError errorWithDomain:NSBundle.mainBundle.bundleIdentifier code:1
+            userInfo:@{NSLocalizedDescriptionKey: @"签名组件 ZSigner 未加载，请重装应用后重试。"}]);
+        return nil;
+    }
     NSMutableArray *paths = [NSMutableArray arrayWithCapacity:[urls count]];
     for (NSURL *url in urls) {
         [paths addObject:url.path];
     }
     
-    return [NSClassFromString(@"ZSigner") signMachOPathArr:paths bundleId:NSBundle.mainBundle.bundleIdentifier cert:self.certificateData
+    return [signerClass signMachOPathArr:paths bundleId:NSBundle.mainBundle.bundleIdentifier cert:self.certificateData
                                                       pass:LCSharedUtils.certificatePassword completionHandler:completionHandler];
+}
+
+ + (NSString *)validateSigningKey:(NSData *)key password:(NSString *)password {
+    NSError *error = nil;
+    [self loadStoreFrameworksWithError2:&error];
+    if (error) return error.localizedDescription;
+    NSData *profile = [NSData dataWithContentsOfURL:[NSBundle.mainBundle.bundleURL URLByAppendingPathComponent:@"embedded.mobileprovision"]];
+    return [NSClassFromString(@"ZSigner") validateKey:key password:password profile:profile];
 }
 
 + (NSString*)getCertTeamIdWithKeyData:(NSData*)keyData password:(NSString*)password {

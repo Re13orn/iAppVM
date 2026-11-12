@@ -9,7 +9,12 @@ import SwiftUI
 @main
 struct LiveContainerSwiftUIApp : SwiftUI.App {
     @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-    
+    // Observes the shared model directly so language changes re-evaluate the
+    // scene body and the root .id() can rebuild the whole tree. @ObservedObject
+    // holds the reference itself; it must not use @EnvironmentObject here
+    // because nothing injects the environment object above the App body.
+    @ObservedObject private var sharedModel = DataManager.shared.model
+
     init() {
         let fm = FileManager()
         var tempAppDataFolderNames : [String] = []
@@ -106,6 +111,7 @@ struct LiveContainerSwiftUIApp : SwiftUI.App {
                 .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
                 .environmentObject(DataManager.shared.model)
                 .environmentObject(LCAppSortManager.shared)
+                .id(sharedModel.appLanguageGeneration)
         }
         
         if UIApplication.shared.supportsMultipleScenes, #available(iOS 16.1, *) {

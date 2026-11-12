@@ -14,17 +14,17 @@ struct LCHelpView : View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading) {
-                    Text("lc.helpView.text1")
+                    Text("lc.helpView.text1".loc)
                     Text("")
-                    Text("lc.helpView.text2")
+                    Text("lc.helpView.text2".loc)
                 }
                 .padding()
             }
-            .navigationTitle("lc.helpView.title")
+            .navigationTitle("lc.helpView.title".loc)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem {
-                    Button("lc.common.done") {
+                    Button("lc.common.done".loc) {
                         isPresent = false
                     }
                 }

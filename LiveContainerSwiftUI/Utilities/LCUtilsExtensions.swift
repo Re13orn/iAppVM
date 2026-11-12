@@ -8,7 +8,7 @@
 import LocalAuthentication
 
 extension LCUtils {
-    public static let appGroupUserDefault = UserDefaults.init(suiteName: LCSharedUtils.appGroupID()) ?? UserDefaults.standard
+    public static let appGroupUserDefault = LCSharedUtils.appGroupPath() == nil ? UserDefaults.standard : (UserDefaults.init(suiteName: LCSharedUtils.appGroupID()) ?? UserDefaults.standard)
     
     public static func signTweaks(tweakFolderUrl: URL, force : Bool = false, progressHandler : ((Progress) -> Void)? = nil) async throws {
         guard LCSharedUtils.certificatePassword() != nil else {
@@ -76,11 +76,8 @@ extension LCUtils {
                     return
                 }
                 
-                guard let error else {
-                    c.resume()
-                    return
-                }
-                c.resume(throwing: error)
+                c.resume(throwing: error ?? NSError(domain: "iOSVMSigning", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "插件签名失败，签名器未返回详细信息。"]))
             }
             if let progress {
                 progressHandler?(progress)

@@ -51,11 +51,15 @@ import Intents
 
 class SceneDelegate: NSObject, UIWindowSceneDelegate, ObservableObject { // Make SceneDelegate conform ObservableObject
     var window: UIWindow?
+    // SwiftUI scenes have no keyWindow at willConnectTo time; keep the scene
+    // itself so per-window views can compare against scene notifications.
+    var scene: UIScene?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        self.scene = scene
         self.window = (scene as? UIWindowScene)?.keyWindow
     }
-    
+
 }
 
 

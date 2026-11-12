@@ -29,6 +29,7 @@ uint32_t dyld_get_sdk_version(const struct mach_header* mh);
 + (void)validateJITLessSetupWithCompletionHandler:(void (^)(BOOL success, NSError *error))completionHandler;
 + (NSURL *)archiveIPAWithBundleName:(NSString*)newBundleName includingExtraInfoDict:(NSDictionary *)extraInfoDict error:(NSError **)error;
 + (NSData *)certificateData;
++ (NSString *)validateSigningKey:(NSData *)key password:(NSString *)password;
 + (void)launchMultitaskGuestApp:(NSString *)displayName completionHandler:(void (^)(NSNumber *pid, NSError *error))completionHandler API_AVAILABLE(ios(16.0));
 
 
@@ -47,10 +48,6 @@ uint32_t dyld_get_sdk_version(const struct mach_header* mh);
 + (NSString *)getVersionInfo;
 + (NSString *)liveProcessBundleIdentifier;
 + (NSData*)bookmarkForURL:(NSURL*) url;
-@end
-
-@interface NSUserDefaults(LiveContainer)
-+ (bool)sideStoreExist;
 @end
 
 @interface LCP12CertHelper : NSObject

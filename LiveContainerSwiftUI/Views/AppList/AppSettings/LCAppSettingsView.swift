@@ -37,6 +37,7 @@ struct LCAppSettingsView: View {
     @State private var errorShow = false
     @State private var errorInfo = ""
     @State private var selectUnusedContainerSheetShow = false
+    @State private var suppressKnownDebugAlerts = false
     
     @EnvironmentObject private var sharedModel : SharedModel
     
@@ -48,101 +49,23 @@ struct LCAppSettingsView: View {
     var body: some View {
         Form {
             Section {
-                HStack {
-                    Text("lc.appSettings.bundleId".loc)
-                    Spacer()
-                    Text(appInfo.relativeBundlePath)
-                        .foregroundColor(.gray)
-                        .multilineTextAlignment(.trailing)
-                        .textSelection(.enabled)
-                }
-                HStack {
-                    Text("lc.appSettings.remark".loc)
-                    Spacer()
-                    TextField("lc.appSettings.remarkPlaceholder".loc, text: $model.uiRemark)
-                        .foregroundColor(.gray)
-                        .multilineTextAlignment(.trailing)
-                }
-                if !model.uiIsShared {
-                    Menu {
-                        Picker(selection: $model.uiTweakFolder , label: Text("")) {
-                            Label("lc.common.none".loc, systemImage: "nosign").tag(Optional<String>(nil))
-                            ForEach(sharedModel.tweakFolderNames, id:\.self) { folderName in
-                                Text(folderName).tag(Optional(folderName))
-                            }
-                        }
-                    } label: {
-                        HStack {
-                            Text("lc.appSettings.tweakFolder".loc)
-                                .foregroundColor(.primary)
-                            Spacer()
-                            Text(model.uiTweakFolder == nil ? "None" : model.uiTweakFolder!)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
-                    
-                    
-                } else {
-                    HStack {
-                        Text("lc.appSettings.tweakFolder".loc)
-                            .foregroundColor(.primary)
-                        Spacer()
-                        Text(model.uiTweakFolder == nil ? "lc.common.none".loc : model.uiTweakFolder!)
-                            .foregroundColor(.gray)
-                            .multilineTextAlignment(.trailing)
-                    }
-                }
-                
-                if !model.uiIsShared {
-                    if LCUtils.isAppGroupAltStoreLike() || LCUtils.store() == .ADP {
-                        Button("lc.appSettings.toSharedApp".loc) {
-                            Task { await moveToAppGroup()}
-                        }
-                    }
-                } else if sharedModel.multiLCStatus != 2 {
-                    Button("lc.appSettings.toPrivateApp".loc) {
-                        Task { await movePrivateDoc() }
-                    }
-                }
-            } header: {
-                Text("lc.common.data".loc)
+                LCToolContext(
+                    model: model,
+                    title: "lc.appSettings.compatHeader".loc,
+                    subtitle: "lc.appSettings.compatFooter".loc,
+                    symbol: "gearshape.2"
+                )
             }
-            
+            debugAlertSection
+            dataSection
+            containerSection
             Section {
-                List{
-                    ForEach(model.uiContainers.indices, id:\.self) { i in
-                        NavigationLink {
-                            LCContainerView(container: model.uiContainers[i], uiDefaultDataFolder: $model.uiDefaultDataFolder, delegate: self)
-                        } label: {
-                            Text(model.uiContainers[i].name)
-                        }
-                    }
+                NavigationLink { LCTestPresetsView(model: model) } label: {
+                    Label("lc.tools.configurationPresets".loc, systemImage: "slider.horizontal.3")
                 }
-                if(model.uiContainers.count < SharedModel.keychainAccessGroupCount) {
-                    Button {
-                        Task{ await createFolder() }
-                    } label: {
-                        Text("lc.appSettings.newDataFolder".loc)
-                    }
-                    Button {
-                        choosingStorage = true
-                    } label: {
-                        Text("lc.appSettings.selectExternalStorage".loc)
-                    }
-                    if(!model.uiIsShared) {
-                        Button {
-                            selectUnusedContainerSheetShow = true
-                        } label: {
-                            Text("lc.container.selectUnused".loc)
-                        }
-                    }
-                }
-                
-            } header: {
-                Text("lc.common.container".loc)
+            } footer: {
+                Text("lc.tools.configurationPresetsDescription".loc)
             }
-            
-            
             Section {
                 Toggle(isOn: $model.uiIsJITNeeded) {
                     Text("lc.appSettings.launchWithJit".loc)
@@ -167,7 +90,7 @@ struct LCAppSettingsView: View {
                             }
                             .buttonStyle(BorderlessButtonStyle())
                         } else {
-                            Text("No file selected")
+                            Text("lc.appSettings.noFileSelected".loc)
                                 .foregroundColor(.gray)
                         }
                         Button(action: {
@@ -180,7 +103,7 @@ struct LCAppSettingsView: View {
                                     // Store the Base64-encoded string of the file content
                                     model.jitLaunchScriptJs = data.base64EncodedString()
                                 } catch {
-                                    errorInfo = "Failed to read file: \(error.localizedDescription)"
+                                    errorInfo = "lc.appSettings.readFileFailed %@".localizeWithFormat(error.localizedDescription)
                                     errorShow = true
                                 }
                             }
@@ -396,11 +319,11 @@ struct LCAppSettingsView: View {
                         .foregroundStyle(.gray)
                 }
             } header: {
-                Text("lc.common.statistics")
+                Text("lc.common.statistics".loc)
             }
 
         }
-        .navigationTitle(appInfo.displayName())
+        .navigationTitle("lc.appSettings.compatHeader".loc)
         .navigationBarTitleDisplayMode(.inline)
         .alert("lc.common.error".loc, isPresented: $errorShow) {
             Button("lc.common.ok".loc, action: {
@@ -477,6 +400,122 @@ struct LCAppSettingsView: View {
         }
     }
 
+    private var debugAlertSection: some View {
+        Section {
+            Toggle("lc.appSettings.reduceMemoryAlerts".loc, isOn: $suppressKnownDebugAlerts)
+                .disabled(model.isOperationBusy || model.isLaunchPreparationBusy || model.isSigningInProgress)
+                .onChange(of: suppressKnownDebugAlerts) { value in
+                    appInfo.info()["IOSVMSuppressKnownDebugAlerts"] = value
+                    appInfo.save()
+                }
+                .onAppear {
+                    suppressKnownDebugAlerts = appInfo.info()["IOSVMSuppressKnownDebugAlerts"] as? Bool ?? false
+                }
+        } header: {
+            Text("lc.appSettings.debugHintManagement".loc)
+        } footer: {
+            Text("lc.appSettings.reduceMemoryAlertsDesc".loc)
+        }
+    }
+
+    private var dataSection: some View {
+        Section {
+            HStack {
+                Text("lc.appSettings.appIdentity".loc)
+                Spacer()
+                Text(model.bundleIdentifier)
+                    .foregroundColor(.gray)
+                    .multilineTextAlignment(.trailing)
+                    .textSelection(.enabled)
+            }
+            HStack {
+                Text("lc.appSettings.remark".loc)
+                Spacer()
+                TextField("lc.appSettings.remarkPlaceholder".loc, text: $model.uiRemark)
+                    .foregroundColor(.gray)
+                    .multilineTextAlignment(.trailing)
+            }
+            if !model.uiIsShared {
+                Menu {
+                    Picker(selection: $model.uiTweakFolder, label: Text("")) {
+                        Label("lc.common.none".loc, systemImage: "nosign").tag(Optional<String>(nil))
+                        ForEach(sharedModel.tweakFolderNames, id: \.self) { folderName in
+                            Text(folderName).tag(Optional(folderName))
+                        }
+                    }
+                } label: {
+                    HStack {
+                        Text("lc.appSettings.tweakFolder".loc)
+                            .foregroundColor(.primary)
+                        Spacer()
+                        Text(model.uiTweakFolder == nil ? "lc.common.none".loc : model.uiTweakFolder!)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+            } else {
+                HStack {
+                    Text("lc.appSettings.tweakFolder".loc)
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Text(model.uiTweakFolder == nil ? "lc.common.none".loc : model.uiTweakFolder!)
+                        .foregroundColor(.gray)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+            if !model.uiIsShared {
+                if LCUtils.isAppGroupAltStoreLike() || LCUtils.store() == .ADP {
+                    Button("lc.appSettings.toSharedApp".loc) {
+                        Task { await moveToAppGroup() }
+                    }
+                }
+            } else if sharedModel.multiLCStatus != 2 {
+                Button("lc.appSettings.toPrivateApp".loc) {
+                    Task { await movePrivateDoc() }
+                }
+            }
+        } header: {
+            Text("lc.common.data".loc)
+        }
+    }
+
+    private var containerSection: some View {
+        Section {
+            ForEach(model.uiContainers.indices, id: \.self) { i in
+                NavigationLink {
+                    LCContainerView(container: model.uiContainers[i], uiDefaultDataFolder: $model.uiDefaultDataFolder, delegate: self, model: model)
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(model.uiContainers[i].name == model.uiContainers[i].folderName ? "lc.appSettings.sandbox %lld".localizeWithFormat(i + 1) : model.uiContainers[i].name)
+                        if model.uiContainers[i].folderName == model.uiSelectedContainer?.folderName {
+                            Text("lc.appSettings.currentUse".loc).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            if model.uiContainers.count < SharedModel.keychainAccessGroupCount {
+                Button {
+                    Task { await createFolder() }
+                } label: {
+                    Text("lc.appSettings.newDataFolder".loc)
+                }
+                Button {
+                    choosingStorage = true
+                } label: {
+                    Text("lc.appSettings.selectExternalStorage".loc)
+                }
+                if !model.uiIsShared {
+                    Button {
+                        selectUnusedContainerSheetShow = true
+                    } label: {
+                        Text("lc.container.selectUnused".loc)
+                    }
+                }
+            }
+        } header: {
+            Text("lc.common.container".loc)
+        }
+    }
+
     func createFolder() async {
         let newName = NSUUID().uuidString
         guard let displayName = await renameFolderInput.open(initVal: newName), displayName != "" else {
@@ -524,6 +563,19 @@ struct LCAppSettingsView: View {
         }
         appInfo.containers = model.uiContainers;
         newContainer.makeLCContainerInfoPlist(appIdentifier: appInfo.bundleIdentifier()!, keychainGroupId: freeKeyChainGroup)
+        if let writeError = newContainer.lastPlistWriteError {
+            // Roll back so the broken container never appears in the list.
+            model.uiContainers.removeAll { $0.folderName == newName }
+            if model.uiSelectedContainer?.folderName == newName { model.uiSelectedContainer = nil }
+            if model.uiDefaultDataFolder == newName {
+                model.uiDefaultDataFolder = nil
+                appInfo.dataUUID = nil
+            }
+            appInfo.containers = model.uiContainers
+            errorShow = true
+            errorInfo = String(format: "lc.container.writeError".loc, writeError.localizedDescription)
+            return
+        }
     }
     
     func importDataStorage(result: Result<URL, any Error>) async {
@@ -582,6 +634,9 @@ struct LCAppSettingsView: View {
 //                DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
                     if container!.bookmarkResolved {
                         container!.makeLCContainerInfoPlist(appIdentifier: appInfo.bundleIdentifier()!, keychainGroupId: freeKeyChainGroup)
+                        if let writeError = container!.lastPlistWriteError {
+                            throw String(format: "lc.container.writeError".loc, writeError.localizedDescription)
+                        }
                     }
 //                }
             }
@@ -868,6 +923,14 @@ extension LCAppSettingsView : LCSelectContainerViewDelegate {
                     return
                 }
                 newContainer.makeLCContainerInfoPlist(appIdentifier: appInfo.bundleIdentifier()!, keychainGroupId: freeKeyChainGroup)
+                if let writeError = newContainer.lastPlistWriteError {
+                    // Roll back and abort the whole batch so no half-registered container survives.
+                    model.uiContainers.removeAll { $0.folderName == folderName }
+                    appInfo.containers = model.uiContainers
+                    errorShow = true
+                    errorInfo = String(format: "lc.container.writeError".loc, writeError.localizedDescription)
+                    return
+                }
             }
 
             

@@ -445,6 +445,21 @@ class AppInfoProvider {
             }
         }
     }
+
+    @objc public func removeRunningApp(_ appUUID: String, expectedView: UIView?) {
+        // Native-window entries are added with view=nil (LCUtils.launchMultitaskGuestApp),
+        // so only filter by view identity when the caller actually owns one.
+        let remove = {
+            if let expectedView {
+                self.apps.removeAll { $0.appUUID == appUUID && $0.view === expectedView }
+            } else {
+                self.apps.removeAll { $0.appUUID == appUUID }
+            }
+            if self.apps.isEmpty { self.hideDock() }
+            else if self.isVisible { self.updateDockFrame() }
+        }
+        if Thread.isMainThread { remove() } else { DispatchQueue.main.async(execute: remove) }
+    }
     
     @objc public func showDock() {
         guard isDockEnabled() else { return }
@@ -698,8 +713,13 @@ class AppInfoProvider {
     @objc public func addRunningAppWithInfo(_ appInfo: LCAppInfo?, appUUID: String, view: UIView?) {
         guard isDockEnabled() else { return }
         
-        if apps.contains(where: { $0.appUUID == appUUID }) {
-            return
+        if let existing = apps.first(where: { $0.appUUID == appUUID }) {
+            if let old = existing.view?._viewDelegate() as? DecoratedAppSceneViewController,
+               !old.appSceneVC.isAppRunning, existing.view !== view {
+                old.view.removeFromSuperview()
+                old.removeFromParent()
+                apps.removeAll { $0.appUUID == appUUID }
+            } else { return }
         }
         
         let appName = appInfo?.displayName() ?? "Unknown App"

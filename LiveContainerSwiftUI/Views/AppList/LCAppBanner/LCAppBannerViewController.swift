@@ -40,6 +40,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
 
         preferredContentSize = CGSize(width: 0, height: LCAppBannerRootView.bannerHeight)
         bannerView.runControl.addTarget(self, action: #selector(runButtonTapped), for: .touchUpInside)
+        bannerView.settingsControl.addTarget(self, action: #selector(openSettings), for: .touchUpInside)
         bannerView.addInteraction(UIContextMenuInteraction(delegate: self))
 
         let doubleTapGesture = UITapGestureRecognizer(target: self, action: #selector(bannerDoubleTapped))
@@ -107,11 +108,12 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             }
         }
 
-        Task { [weak self] in
+        Task { @MainActor [weak self] in
             await self?.runApp()
         }
     }
 
+    @MainActor
     private func runApp(multitask: Bool? = nil) async {
         if configuration.model.appInfo.isLocked && !DataManager.shared.model.isHiddenAppUnlocked {
             do {
@@ -126,6 +128,8 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
 
         do {
             try await configuration.model.runApp(multitask: multitask)
+        } catch is LCLaunchPreflight.Failure {
+            delegate.openNavigationView(view: AnyView(LCLaunchPreflightView(model:configuration.model)))
         } catch {
             showError(error.localizedDescription)
         }
@@ -152,6 +156,15 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
 
         // 2. Main Section
         var sectionChildren: [UIMenuElement] = []
+        sectionChildren.append(UIAction(title: "浏览沙盒", image: UIImage(systemName: "folder")) { [weak self] _ in
+            self?.delegate.openNavigationView(view: AnyView(LCAppSandboxView(model: model)))
+        })
+        sectionChildren.append(UIAction(title: "Guest Keychain", image: UIImage(systemName: "key.fill")) { [weak self] _ in
+            self?.delegate.openNavigationView(view: AnyView(LCGuestKeychainView(model: model)))
+        })
+        sectionChildren.append(UIAction(title: "Frida 调试", image: UIImage(systemName: "ant")) { [weak self] _ in
+            self?.delegate.openNavigationView(view: AnyView(LCFridaView(model: model)))
+        })
         if !model.uiIsShared, model.uiSelectedContainer != nil {
             sectionChildren.append(UIAction(
                 title: "lc.appBanner.openDataFolder".loc,
@@ -165,10 +178,10 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         if #available(iOS 16.0, *) {
             let shouldLaunchInMultitaskMode = model.shouldLaunchInMultitaskMode
             sectionChildren.append(UIAction(
-                title: shouldLaunchInMultitaskMode ? "lc.appBanner.run".loc : "lc.appBanner.multitask".loc,
+                title: shouldLaunchInMultitaskMode ? "全屏兼容运行" : "独立测试窗口运行",
                 image: UIImage(systemName: shouldLaunchInMultitaskMode ? "play.fill" : "macwindow.badge.plus")
             ) { [weak self] _ in
-                Task { [weak self] in
+                Task { @MainActor [weak self] in
                     await self?.runApp(multitask: !shouldLaunchInMultitaskMode)
                 }
             })
@@ -182,12 +195,12 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                     self?.copyLaunchUrl()
                 },
                 UIAction(title: "lc.appBanner.saveAppIcon".loc, image: UIImage(systemName: "square.and.arrow.down")) { [weak self] _ in
-                    Task { [weak self] in
+                    Task { @MainActor [weak self] in
                         await self?.saveIcon()
                     }
                 },
                 UIAction(title: "lc.appBanner.createAppClip".loc, image: UIImage(systemName: "appclip")) { [weak self] _ in
-                    Task { [weak self] in
+                    Task { @MainActor [weak self] in
                         await self?.createAppClip()
                     }
                 }
@@ -208,7 +221,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
                 image: UIImage(systemName: "trash"),
                 attributes: .destructive
             ) { [weak self] _ in
-                Task { [weak self] in
+                Task { @MainActor [weak self] in
                     await self?.uninstall()
                 }
             })
@@ -231,8 +244,8 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
-    private func openSettings() {
-        delegate.openNavigationView(view: AnyView(LCAppSettingsView(model: configuration.model)))
+    @objc private func openSettings() {
+        delegate.openNavigationView(view: AnyView(LCAppWorkbenchView(model: configuration.model)))
     }
 
     private func openDataFolder() {
@@ -243,6 +256,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         UIApplication.shared.open(url)
     }
 
+    @MainActor
     private func uninstall() async {
         let appInfo = configuration.model.appInfo
         let displayName = appInfo.displayName() ?? configuration.model.displayName
@@ -276,16 +290,47 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
             try fileManager.removeItem(atPath: bundlePath)
             delegate.removeApp(app: configuration.model)
 
+            // Remove the app's plugin folder and signing request record so they
+            // don't linger after uninstall.
+            var orphanedCleanupErrors: [String] = []
+            if let tweakFolderName = appInfo.tweakFolder, !tweakFolderName.isEmpty {
+                let tweakBase = appInfo.isShared ? LCPath.lcGroupTweakPath : LCPath.tweakPath
+                let tweakURL = tweakBase.appendingPathComponent(tweakFolderName)
+                do { try fileManager.removeItem(at: tweakURL) }
+                catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {}
+                catch { orphanedCleanupErrors.append(tweakFolderName) }
+                DataManager.shared.model.tweakFolderNames.removeAll { $0 == tweakFolderName }
+            }
+            let signingRequestURL = LCPath.docPath.appendingPathComponent("iOSVM/SigningRequests/\(appInfo.relativeBundlePath).json")
+            do { try fileManager.removeItem(at: signingRequestURL) }
+            catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {}
+            catch { orphanedCleanupErrors.append("SigningRequests/\(appInfo.relativeBundlePath).json") }
+            if !orphanedCleanupErrors.isEmpty {
+                NSLog("[LC] uninstall orphan cleanup failed: \(orphanedCleanupErrors.joined(separator: ", "))")
+            }
+
             if shouldRemoveAppFolders {
+                var retained: [String] = []
                 for container in containers {
                     let dataUUID = container.folderName
-                    try fileManager.removeItem(at: LCPath.dataPath.appendingPathComponent(dataUUID))
-                    LCUtils.removeAppKeychain(dataUUID: dataUUID)
-                    DataManager.shared.model.appDataFolderNames.removeAll { $0 == dataUUID }
+                    let folder = LCPath.dataPath.appendingPathComponent(dataUUID)
+                    do {
+                        do { try fileManager.removeItem(at: folder) }
+                        catch let error as NSError where error.domain == NSCocoaErrorDomain && error.code == NSFileNoSuchFileError {
+                            // An already absent folder still permits keychain cleanup.
+                        }
+                        LCUtils.removeAppKeychain(dataUUID: dataUUID)
+                        DataManager.shared.model.appDataFolderNames.removeAll { $0 == dataUUID }
+                    } catch {
+                        retained.append("\(dataUUID)：\(error.localizedDescription)")
+                    }
+                }
+                if !retained.isEmpty {
+                    showError("App 已卸载，但以下数据目录未能删除；对应钥匙串数据也已保留。可在设置的数据管理中重试。\n\n" + retained.joined(separator: "\n"))
                 }
             }
         } catch {
-            showError(error.localizedDescription)
+            showError("App 未能卸载，应用列表已保留。\n\n" + error.localizedDescription)
         }
     }
 
@@ -303,6 +348,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
+    @MainActor
     private func createAppClip() async {
         guard let style = await delegate.promptForGeneratedIconStyle() else {
             return
@@ -322,6 +368,7 @@ final class LCAppBannerViewController: UIViewController, UIContextMenuInteractio
         }
     }
 
+    @MainActor
     private func saveIcon() async {
         guard let style = await delegate.promptForGeneratedIconStyle() else {
             return

@@ -33,24 +33,42 @@
     
     [MultitaskDockManager.shared addRunningApp:windowName appUUID:dataUUID view:self.view];
     
+    __weak typeof(self) weakSelf = self;
     NSArray *menuItems = @[
+        [UIAction actionWithTitle:@"运行状态与授权" image:[UIImage systemImageNamed:@"checkmark.shield"] identifier:nil handler:^(UIAction * _Nonnull action) {
+            [weakSelf minimizeWindow];
+            [NSNotificationCenter.defaultCenter postNotificationName:@"IOSVMOpenAppTool" object:nil
+                userInfo:@{@"tool": @"process", @"bundle": bundleId, @"container": dataUUID}];
+        }],
+        [UIAction actionWithTitle:@"浏览沙盒" image:[UIImage systemImageNamed:@"folder"] identifier:nil handler:^(UIAction * _Nonnull action) {
+            [weakSelf minimizeWindow];
+            [NSNotificationCenter.defaultCenter postNotificationName:@"IOSVMOpenAppTool" object:nil
+                userInfo:@{@"tool": @"sandbox", @"bundle": bundleId, @"container": dataUUID}];
+        }],
+        [UIAction actionWithTitle:@"Frida 调试" image:[UIImage systemImageNamed:@"ant"] identifier:nil handler:^(UIAction * _Nonnull action) {
+            [weakSelf minimizeWindow];
+            [NSNotificationCenter.defaultCenter postNotificationName:@"IOSVMOpenAppTool" object:nil
+                userInfo:@{@"tool": @"frida", @"bundle": bundleId, @"container": dataUUID}];
+        }],
+        [UIAction actionWithTitle:@"返回管理页" image:[UIImage systemImageNamed:@"square.stack"] identifier:nil handler:^(UIAction * _Nonnull action) {
+            [weakSelf minimizeWindow];
+        }],
         [UIAction actionWithTitle:@"lc.multitask.copyPid".loc image:[UIImage systemImageNamed:@"doc.on.doc"] identifier:nil handler:^(UIAction * _Nonnull action) {
-            UIPasteboard.generalPasteboard.string = @(self.appSceneVC.pid).stringValue;
+            UIPasteboard.generalPasteboard.string = @(weakSelf.appSceneVC.pid).stringValue;
         }],
         [UIAction actionWithTitle:@"lc.multitask.enablePip".loc image:[UIImage systemImageNamed:@"pip.enter"] identifier:nil handler:^(UIAction * _Nonnull action) {
-            if ([PiPManager.shared isPiPWithVC:self.appSceneVC]) {
+            if ([PiPManager.shared isPiPWithVC:weakSelf.appSceneVC]) {
                 [PiPManager.shared stopPiP];
             } else {
-                [PiPManager.shared startPiPWithVC:self.appSceneVC];
+                [PiPManager.shared startPiPWithVC:weakSelf.appSceneVC];
             }
         }],
         [UICustomViewMenuElement elementWithViewProvider:^UIView *(UICustomViewMenuElement *element) {
-            return [self scaleSliderViewWithTitle:@"lc.multitask.scale".loc min:0.5 max:2.0 value:self.scaleRatio stepInterval:0.01];
+            return [weakSelf scaleSliderViewWithTitle:@"lc.multitask.scale".loc min:0.5 max:2.0 value:weakSelf.scaleRatio stepInterval:0.01];
         }]
     ];
     
 
-    __weak typeof(self) weakSelf = self;
     [self.navigationItem setTitleMenuProvider:^UIMenu *(NSArray<UIMenuElement *> *suggestedActions){
         if(!weakSelf.appSceneVC.isAppRunning) {
             return [UIMenu menuWithTitle:NSLocalizedString(@"lc.multitaskAppWindow.appTerminated", nil) children:@[]];
@@ -65,6 +83,7 @@
     minimizeImage = [minimizeImage imageWithConfiguration:minimizeConfig];
     UIBarButtonItem *minimizeButton = [[UIBarButtonItem alloc] initWithImage:minimizeImage style:UIBarButtonItemStylePlain target:self action:@selector(minimizeWindow)];
     minimizeButton.tintColor = [UIColor systemYellowColor];
+    minimizeButton.accessibilityLabel = @"最小化测试窗口";
     
     NSString *maximizeImageName = _isMaximized ? @"arrow.down.right.and.arrow.up.left.circle" : @"arrow.up.left.and.arrow.down.right.circle";
     UIImage *maximizeImage = [UIImage systemImageNamed:maximizeImageName];
@@ -72,12 +91,14 @@
     maximizeImage = [maximizeImage imageWithConfiguration:maximizeConfig];
     self.maximizeButton = [[UIBarButtonItem alloc] initWithImage:maximizeImage style:UIBarButtonItemStylePlain target:self action:@selector(maximizeWindow)];
     self.maximizeButton.tintColor = [UIColor systemGreenColor];
+    self.maximizeButton.accessibilityLabel = @"切换测试窗口大小";
     
     UIImage *closeImage = [UIImage systemImageNamed:@"xmark.circle"];
     UIImageConfiguration *closeConfig = [UIImageSymbolConfiguration configurationWithPointSize:16.0 weight:UIImageSymbolWeightMedium];
     closeImage = [closeImage imageWithConfiguration:closeConfig];
     UIBarButtonItem *closeButton = [[UIBarButtonItem alloc] initWithImage:closeImage style:UIBarButtonItemStylePlain target:self action:@selector(closeWindow)];
     closeButton.tintColor = [UIColor systemRedColor];
+    closeButton.accessibilityLabel = @"关闭测试 App";
     
     NSArray *barButtonItems = @[closeButton, self.maximizeButton, minimizeButton];
     if([NSUserDefaults.lcSharedDefaults boolForKey:@"LCMultitaskBottomWindowBar"]) {
@@ -324,12 +345,20 @@
 }
 
 - (void)appSceneVCAppDidExit:(AppSceneViewController*)vc {
+    if (!NSThread.isMainThread) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf appSceneVCAppDidExit:vc];
+        });
+        return;
+    }
+
     BOOL skipTerminationScreen = [NSUserDefaults.lcSharedDefaults boolForKey:@"LCSkipTerminatedScreen"];
     BOOL isManual = _isAppTerminationRequested;
     if(isManual || skipTerminationScreen) {
         
         MultitaskDockManager *dock = [MultitaskDockManager shared];
-        [dock removeRunningApp:self.dataUUID];
+        [dock removeRunningApp:self.dataUUID expectedView:self.view];
         
         self.view.layer.masksToBounds = NO;
         [UIView transitionWithView:self.view duration:0.4 options:UIViewAnimationOptionTransitionCurlUp animations:^{
@@ -355,18 +384,22 @@
 - (void)appSceneVC:(AppSceneViewController*)vc didInitializeWithError:(NSError *)error {
     dispatch_async(dispatch_get_main_queue(), ^{
         if(error) {
+            self.isAppTerminationRequested = YES;
+            [IOSVMWindowLaunchReporter recordPID:nil error:error bundle:vc.bundleId container:self.dataUUID];
+            if (self.pidAvailableHandler) {
+                self.pidAvailableHandler(nil, error);
+                self.pidAvailableHandler = nil;
+            } else {
+                [NSNotificationCenter.defaultCenter postNotificationName:@"IOSVMWindowFailed" object:nil
+                    userInfo:@{@"error": error.localizedDescription}];
+            }
             [vc appTerminationCleanUp];
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"lc.common.error".loc message:error.localizedDescription preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"lc.common.ok".loc style:UIAlertActionStyleCancel handler:nil]];
-            [alert addAction:[UIAlertAction actionWithTitle:@"lc.common.copy".loc style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-                UIPasteboard.generalPasteboard.string = error.localizedDescription;
-            }]];
-            [self presentViewController:alert animated:YES completion:nil];
         } else {
             self.pid = vc.pid;
             [self updateOriginalFrame];
             if (self.pidAvailableHandler) {
                 self.pidAvailableHandler(@(self.pid), nil);
+                self.pidAvailableHandler = nil;
             }
         }
     });
@@ -378,6 +411,14 @@
 }
 
 - (void)appSceneVC:(AppSceneViewController*)vc didUpdateFromSettings:(UIMutableApplicationSceneSettings *)baseSettings transitionContext:(id)newContext lifecycleActionType:(uint32_t)actionType {
+    if (!NSThread.isMainThread) {
+        __weak typeof(self) weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf appSceneVC:vc didUpdateFromSettings:baseSettings transitionContext:newContext lifecycleActionType:actionType];
+        });
+        return;
+    }
+
     [self.appSceneVC updateSettingsWithBlock:^(UIMutableApplicationSceneSettings *settings) {
         settings.userInterfaceStyle = baseSettings.userInterfaceStyle;
         settings.interfaceOrientation = baseSettings.interfaceOrientation;
