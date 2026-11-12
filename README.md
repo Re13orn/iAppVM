@@ -29,6 +29,12 @@ bash scripts/run-regression.sh build/iOSVM-unsigned.ipa
 
 [设备签名说明](docs/DEVICE-SIGNING.md) · [Mac 安装助手预览](MacInstaller/README.md)
 
+## iAppVM Skill
+
+[iAppVM Skill](skills/iappvm/SKILL.md) 提供 IPA 导入、Frida Gadget 和脚本、USB 调试、沙盒与单 App 代理的操作和排查指南，附带诊断 JS 和 Frida CLI 参数生成工具。
+
+在 Codex 中，将整个 `skills/iappvm` 目录复制到 `~/.codex/skills/`，在新会话里用 `$iappvm` 调用。目录内的脚本和参考资料需要一并保留。
+
 ## 来源和许可证
 
 iAppVM 基于 [LiveContainer](https://github.com/LiveContainer/LiveContainer) 修改，上游基线为 `4dbe0f9a626de801184a42c0be8d2cb105058e3d`。iAppVM 对分析工作台、测试窗口、Frida、网络和签名流程进行了扩展。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "iAppVM 使用与调试"
+  short_description: "适用于不同用户与设备的 iAppVM 指南：Frida 脚本、连接、沙盒及代理"
+  default_prompt: "使用 $iappvm 指导我操作或排查 iAppVM，先确认目标 App、脚本模式与 Gadget 版本。"
