@@ -1,5 +1,9 @@
 # iAppVM
 
+[![构建](https://github.com/Re13orn/iAppVM/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/Re13orn/iAppVM/actions/workflows/build.yml)
+[![公开预览版](https://img.shields.io/badge/preview-v3.8.46--preview.1-blue)](https://github.com/Re13orn/iAppVM/releases/tag/v3.8.46-preview.1)
+[![许可证 AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+
 iAppVM 是面向非越狱 iPhone 和 iPad 的 iOS 应用测试容器。它把 IPA 导入、运行诊断、网络分析、Frida 调试和数据检查放在同一个工作台里。源码已开源，首个公开预览版提供可重签名的 iOS IPA 和 Apple Silicon Mac 安装助手。
 
 - **运行和诊断** · 为导入的 App 准备独立测试窗口，从启动诊断查看签名、配置和进程状态。
